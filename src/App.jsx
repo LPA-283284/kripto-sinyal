@@ -1,21 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-const WISH = [
-  "BTC","ETH","XRP","DOGE","SHIB","APE","PEPE","VET","TRX","XLM",
-  "HOT","MANA","GRT","CHZ","KAITO","LTC","BNB","PENGU","SOL","ADA",
-  "AVAX","LINK","DOT","MATIC","ATOM","UNI","NEAR","APT","FIL","ARB",
-  "GUN","PLUME","HYPER","ALICE","SAHARA","WCT","ANIME","BABY","SOPH",
-  "SXT","RESOLV","PIXEL","W","NIL","FLOKI","DODO","NXPC","VANA","VTHO",
-  "BTTC","FDUSD","BERA","GPS","BIO","OPEN","SIGN","PARTI","ERA","INIT",
-  "SHELL","STO","TOWNS","NEWT","TREE","HAEDAL","MITO","BMT","DOLO",
-  "RED","LAYER","SPK","SOMI","PROVE","HOME","LA","WIN","DENT",
-];
-
 const INTERVALS = [
   { v: "15m", label: "15dk" }, { v: "1h", label: "1sa" },
   { v: "4h", label: "4sa" }, { v: "1d", label: "1gün" },
 ];
-const MTF = ["1h", "4h", "1d"]; // çoklu zaman aralığı uyumu için
+const MTF = ["1h", "4h", "1d"];
+const STORAGE_KEY = "kripto_watch_v1";
 
 function calcRSI(c, p = 14) {
   if (c.length < p + 1) return null;
@@ -64,7 +54,6 @@ function calcBollinger(c, p = 20) {
   if (price > upper) pos = "üst bant üstü"; else if (price < lower) pos = "alt bant altı";
   return { upper, lower, mean, pos, price };
 }
-// Basit oynaklık (ATR benzeri): son n kapanışın ortalama mutlak değişimi
 function calcVolatility(c, n = 14) {
   if (c.length < n + 1) return null;
   let sum = 0;
@@ -76,19 +65,15 @@ function buildSignal(c) {
   const rsi = calcRSI(c), fast = ema(c, 9), slow = ema(c, 21);
   const macd = calcMACD(c), boll = calcBollinger(c);
   if (rsi == null || fast == null || slow == null) return null;
-
   let score = 0, maxScore = 0;
   const reasons = [];
-
   maxScore += 2;
   if (rsi < 30) { score += 2; reasons.push(`RSI ${rsi.toFixed(0)} — aşırı satım`); }
   else if (rsi > 70) { score -= 2; reasons.push(`RSI ${rsi.toFixed(0)} — aşırı alım`); }
   else reasons.push(`RSI ${rsi.toFixed(0)} — nötr`);
-
   maxScore += 1;
   if (fast > slow) { score += 1; reasons.push("EMA9 > EMA21 — yukarı eğilim"); }
   else { score -= 1; reasons.push("EMA9 < EMA21 — aşağı eğilim"); }
-
   if (macd) {
     maxScore += 1;
     if (macd.bullish && macd.rising) { score += 1; reasons.push("MACD pozitif ve yükseliyor"); }
@@ -101,27 +86,21 @@ function buildSignal(c) {
     else if (boll.pos === "üst bant üstü") { score -= 1; reasons.push("Fiyat üst Bollinger bandının üstünde"); }
     else reasons.push(`Bollinger: ${boll.pos}`);
   }
-
   let verdict, tone;
   if (score >= 3) { verdict = "AL"; tone = "buy"; }
   else if (score <= -3) { verdict = "SAT"; tone = "sell"; }
   else { verdict = "BEKLE"; tone = "hold"; }
-
-  // Güven: skorun büyüklüğünün maksimuma oranı
   const strength = maxScore ? Math.abs(score) / maxScore : 0;
   let confidence = "zayıf";
   if (strength >= 0.66) confidence = "güçlü";
   else if (strength >= 0.33) confidence = "orta";
-
-  // Önerilen stop-loss: son fiyat ± 1.5x oynaklık
   const price = c[c.length - 1];
   const vol = calcVolatility(c);
   let stop = null;
   if (vol != null) {
-    if (score > 0) stop = price - 1.5 * vol;       // alımda alta
-    else if (score < 0) stop = price + 1.5 * vol;  // satımda üste
+    if (score > 0) stop = price - 1.5 * vol;
+    else if (score < 0) stop = price + 1.5 * vol;
   }
-
   return { rsi, verdict, tone, reasons, score, confidence, strength, price, stop, dir: Math.sign(score) };
 }
 
@@ -138,8 +117,6 @@ async function fetchCoin(sym, interval) {
   const price = closes[closes.length - 1];
   const prev = closes[closes.length - 2];
   const sig = buildSignal(closes);
-
-  // Çoklu zaman aralığı uyumu
   let mtf = null;
   try {
     const dirs = await Promise.all(
@@ -158,7 +135,6 @@ async function fetchCoin(sym, interval) {
     else if (downs > ups) { align = "çoğunluk aşağı"; atone = "sell"; }
     mtf = { dirs, align, atone, agree: Math.max(ups, downs), total: MTF.length };
   } catch {}
-
   return { closes, price, change: ((price - prev) / prev) * 100, sig, mtf };
 }
 
@@ -257,8 +233,14 @@ function RiskCalc() {
 }
 
 export default function App() {
-  const [available, setAvailable] = useState([]);
-  const [watch, setWatch] = useState(["BTCUSDT", "ETHUSDT", "SOLUSDT"]);
+  const [allSymbols, setAllSymbols] = useState([]); // Binance'teki tüm USDT baseAsset'leri
+  const [watch, setWatch] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
+      if (Array.isArray(saved) && saved.length) return saved;
+    } catch {}
+    return ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+  });
   const [interval, setIntervalSel] = useState(INTERVALS[1]);
   const [rows, setRows] = useState({});
   const [search, setSearch] = useState("");
@@ -269,26 +251,28 @@ export default function App() {
   const prevVerdicts = useRef({});
   const timerRef = useRef(null);
 
+  // İzleme listesini kalıcı sakla
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(watch)); } catch {}
+  }, [watch]);
+
+  // Açılışta Binance'in TÜM geçerli USDT coinlerini çek
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("https://api.binance.com/api/v3/exchangeInfo");
         const data = await res.json();
-        const validUsdt = new Set(
-          data.symbols
-            .filter((s) => s.quoteAsset === "USDT" && s.status === "TRADING")
-            .map((s) => s.baseAsset)
-        );
-        const list = WISH.filter((b) => validUsdt.has(b)).map((b) => ({ sym: b + "USDT", label: b }));
-        const seen = new Set();
-        setAvailable(list.filter((c) => !seen.has(c.sym) && seen.add(c.sym)));
+        const bases = data.symbols
+          .filter((s) => s.quoteAsset === "USDT" && s.status === "TRADING")
+          .map((s) => s.baseAsset);
+        setAllSymbols([...new Set(bases)].sort());
       } catch {
-        setAvailable(["BTC","ETH","SOL","XRP","DOGE","BNB","ADA","AVAX"].map((b) => ({ sym: b + "USDT", label: b })));
+        setAllSymbols(["BTC","ETH","SOL","XRP","DOGE","BNB","ADA","AVAX"]);
       } finally { setLoadingList(false); }
     })();
   }, []);
 
-  const labelOf = (sym) => available.find((c) => c.sym === sym)?.label || sym.replace("USDT", "");
+  const labelOf = (sym) => sym.replace("USDT", "");
 
   const loadAll = useCallback(async () => {
     const results = {};
@@ -319,12 +303,16 @@ export default function App() {
     return () => clearInterval(timerRef.current);
   }, [loadAll]);
 
-  const toggle = (sym) =>
-    setWatch((w) => (w.includes(sym) ? w.filter((s) => s !== sym) : [...w, sym]));
+  const add = (sym) => setWatch((w) => (w.includes(sym) ? w : [...w, sym]));
+  const remove = (sym) => setWatch((w) => w.filter((s) => s !== sym));
 
-  const filtered = available.filter((c) =>
-    c.label.toLowerCase().includes(search.toLowerCase())
-  );
+  // Arama: tüm Binance USDT coinlerinde, izlemede olmayanlardan ilk 40 sonuç
+  const q = search.trim().toUpperCase();
+  const searchResults = q
+    ? allSymbols
+        .filter((b) => b.includes(q) && !watch.includes(b + "USDT"))
+        .slice(0, 40)
+    : [];
 
   return (
     <div style={S.page}>
@@ -382,26 +370,57 @@ export default function App() {
           </div>
         )}
 
+        {/* Coin ARAMA / EKLEME — en üste taşındı, kolay erişim */}
         <div style={S.card}>
-          <div style={S.cardHead}>İZLEME LİSTESİ</div>
-          {watch.length === 0 && <div style={S.muted}>Aşağıdan coin ekle.</div>}
+          <div style={S.cardHead}>
+            COIN ARA VE EKLE {!loadingList && allSymbols.length > 0 && `(${allSymbols.length} coin mevcut)`}
+          </div>
+          {loadingList ? (
+            <div style={S.muted}>Binance coin listesi yükleniyor…</div>
+          ) : (
+            <>
+              <input value={search} onChange={(e) => setSearch(e.target.value)}
+                placeholder="Coin yaz (örn. WIF, PEPE, BTC)…" style={S.input} />
+              {q && (
+                <div style={S.grid}>
+                  {searchResults.map((b) => (
+                    <button key={b} className="chip" onClick={() => { add(b + "USDT"); }}
+                      style={{ ...S.gridChip, borderColor: "#23262f", color: "#9098a6" }}>
+                      + {b}
+                    </button>
+                  ))}
+                  {searchResults.length === 0 && (
+                    <div style={S.muted}>"{q}" için sonuç yok (zaten ekli olabilir veya Binance'te USDT çifti yok).</div>
+                  )}
+                </div>
+              )}
+              {!q && <div style={S.muted}>Yukarıya bir coin adı yazınca eşleşenler çıkar, dokununca eklenir.</div>}
+            </>
+          )}
+        </div>
+
+        <div style={S.card}>
+          <div style={S.cardHead}>İZLEME LİSTESİ ({watch.length})</div>
+          {watch.length === 0 && <div style={S.muted}>Yukarıdan coin ara ve ekle.</div>}
           {watch.map((sym) => {
             const d = rows[sym];
             return (
               <div key={sym} className="row" style={S.row}>
                 <div style={{ flex: "0 0 70px", fontWeight: 700 }}>{labelOf(sym)}</div>
                 <div style={{ flex: 1, color: "#c9cfd9" }}>{d?.error ? "—" : fmtPrice(d?.price)}</div>
-                <div style={{ flex: "0 0 70px", textAlign: "right",
+                <div style={{ flex: "0 0 64px", textAlign: "right",
                   color: !d || d.error ? "#5a606e" : d.change >= 0 ? "#00e08a" : "#ff4d6d" }}>
                   {d && !d.error ? `${d.change >= 0 ? "+" : ""}${d.change.toFixed(2)}%` : ""}
                 </div>
-                <div style={{ flex: "0 0 64px", textAlign: "right" }}>
+                <div style={{ flex: "0 0 58px", textAlign: "right" }}>
                   {d?.sig && (
                     <span style={{ ...S.badge, color: TONE[d.sig.tone], borderColor: TONE[d.sig.tone] }}>
                       {d.sig.verdict}
                     </span>
                   )}
                 </div>
+                <button onClick={() => remove(sym)} title="Listeden çıkar"
+                  style={S.removeBtn} className="chip">✕</button>
               </div>
             );
           })}
@@ -420,8 +439,6 @@ export default function App() {
                     {sig.verdict}
                   </span>
                 </div>
-
-                {/* Güven skoru */}
                 <div style={S.metaRow}>
                   <span style={S.metaKey}>Güven</span>
                   <span style={{ color: CONF_COLOR[sig.confidence], fontWeight: 700, fontSize: 12.5 }}>
@@ -432,8 +449,6 @@ export default function App() {
                   <div style={{ ...S.barFill, width: `${Math.round(sig.strength * 100)}%`,
                     background: CONF_COLOR[sig.confidence] }} />
                 </div>
-
-                {/* Çoklu zaman aralığı uyumu */}
                 {d.mtf && (
                   <div style={S.metaRow}>
                     <span style={S.metaKey}>Zaman uyumu (1s/4s/1g)</span>
@@ -442,8 +457,6 @@ export default function App() {
                     </span>
                   </div>
                 )}
-
-                {/* Önerilen stop-loss */}
                 {sig.stop != null && sig.dir !== 0 && (
                   <div style={S.metaRow}>
                     <span style={S.metaKey}>Önerilen stop-loss</span>
@@ -452,7 +465,6 @@ export default function App() {
                     </span>
                   </div>
                 )}
-
                 <ul style={S.reasons}>
                   {sig.reasons.map((r, i) => <li key={i} style={S.reasonItem}>· {r}</li>)}
                 </ul>
@@ -462,30 +474,6 @@ export default function App() {
         </div>
 
         <RiskCalc />
-
-        <div style={S.card}>
-          <div style={S.cardHead}>
-            COIN EKLE / ÇIKAR {available.length > 0 && `(${available.length} coin)`}
-          </div>
-          {loadingList ? (
-            <div style={S.muted}>Geçerli coinler yükleniyor…</div>
-          ) : (
-            <>
-              <input value={search} onChange={(e) => setSearch(e.target.value)}
-                placeholder="Ara… (örn. PEPE)" style={S.input} />
-              <div style={S.grid}>
-                {filtered.map((c) => (
-                  <button key={c.sym} className="chip" onClick={() => toggle(c.sym)}
-                    style={{ ...S.gridChip, borderColor: watch.includes(c.sym) ? "#00e08a" : "#23262f",
-                      color: watch.includes(c.sym) ? "#00e08a" : "#9098a6" }}>
-                    {watch.includes(c.sym) ? "✓ " : ""}{c.label}
-                  </button>
-                ))}
-                {filtered.length === 0 && <div style={S.muted}>Eşleşen coin yok.</div>}
-              </div>
-            </>
-          )}
-        </div>
 
         <div style={S.disclaimer}>
           Bu araç teknik göstergeleri (RSI, EMA, MACD, Bollinger) tek bir görünümde
@@ -516,8 +504,10 @@ const S = {
   flash: { border: "2px solid", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 14, fontWeight: 700, animation: "slideIn .3s ease" },
   card: { background: "linear-gradient(180deg,#14171f,#10131a)", border: "1px solid #23262f", borderRadius: 16, padding: 18, marginBottom: 14, maxWidth: 720 },
   cardHead: { fontSize: 10, letterSpacing: 1.5, color: "#7a8190", marginBottom: 10 },
-  row: { display: "flex", alignItems: "center", padding: "11px 8px", borderRadius: 8, fontSize: 14 },
+  row: { display: "flex", alignItems: "center", padding: "11px 8px", borderRadius: 8, fontSize: 14, gap: 4 },
   badge: { fontSize: 11, fontWeight: 800, letterSpacing: 1, border: "1px solid", borderRadius: 6, padding: "2px 8px" },
+  removeBtn: { flex: "0 0 28px", background: "transparent", border: "1px solid #23262f", color: "#7a8190",
+    borderRadius: 6, padding: "4px 0", fontSize: 11, cursor: "pointer", marginLeft: 4 },
   detail: { background: "#10131a", border: "1px solid #1c2029", borderRadius: 12, padding: 16 },
   detailHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
   metaRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontSize: 12 },
