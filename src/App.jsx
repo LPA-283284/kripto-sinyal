@@ -1,12 +1,16 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 
-const ALL_COINS = [
-  ["BTCUSDT", "BTC"], ["ETHUSDT", "ETH"], ["SOLUSDT", "SOL"], ["BNBUSDT", "BNB"],
-  ["XRPUSDT", "XRP"], ["DOGEUSDT", "DOGE"], ["ADAUSDT", "ADA"], ["AVAXUSDT", "AVAX"],
-  ["LINKUSDT", "LINK"], ["DOTUSDT", "DOT"], ["MATICUSDT", "MATIC"], ["LTCUSDT", "LTC"],
-  ["TRXUSDT", "TRX"], ["SHIBUSDT", "SHIB"], ["ATOMUSDT", "ATOM"], ["UNIUSDT", "UNI"],
-  ["NEARUSDT", "NEAR"], ["APTUSDT", "APT"], ["FILUSDT", "FIL"], ["ARBUSDT", "ARB"],
-].map(([sym, label]) => ({ sym, label }));
+// Kullanıcının ilgilendiği tüm semboller (geçerli olanlar açılışta otomatik süzülür)
+const WISH = [
+  "BTC","ETH","XRP","DOGE","SHIB","APE","PEPE","VET","TRX","XLM",
+  "HOT","MANA","GRT","CHZ","KAITO","LTC","BNB","PENGU","SOL","ADA",
+  "AVAX","LINK","DOT","MATIC","ATOM","UNI","NEAR","APT","FIL","ARB",
+  "GUN","PLUME","HYPER","ALICE","SAHARA","WCT","ANIME","BABY","SOPH",
+  "SXT","RESOLV","PIXEL","W","NIL","FLOKI","DODO","NXPC","VANA","VTHO",
+  "BTTC","FDUSD","BERA","GPS","BIO","OPEN","SIGN","PARTI","ERA","INIT",
+  "SHELL","STO","TOWNS","NEWT","TREE","HAEDAL","MITO","BMT","DOLO",
+  "RED","LAYER","SPK","SOMI","PROVE","HOME","LA","SUMU","WIN","DENT",
+];
 
 const INTERVALS = [
   { v: "15m", label: "15dk" }, { v: "1h", label: "1sa" },
@@ -114,28 +118,24 @@ function beep(tone) {
   } catch (e) {}
 }
 
-// ── Risk hesaplayıcı ───────────────────────────────────────
 function RiskCalc() {
   const [capital, setCapital] = useState("1000");
   const [riskPct, setRiskPct] = useState("2");
   const [entry, setEntry] = useState("");
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
-
   const cap = parseFloat(capital) || 0;
   const rp = parseFloat(riskPct) || 0;
   const e = parseFloat(entry) || 0;
   const s = parseFloat(stop) || 0;
   const t = parseFloat(target) || 0;
-
-  const riskAmount = cap * (rp / 100);            // riske atılan para
-  const perUnitRisk = e && s ? Math.abs(e - s) : 0; // birim başına zarar
+  const riskAmount = cap * (rp / 100);
+  const perUnitRisk = e && s ? Math.abs(e - s) : 0;
   const lossPct = e && s ? (Math.abs(e - s) / e) * 100 : 0;
-  const positionSize = perUnitRisk ? riskAmount / perUnitRisk : 0; // kaç birim
+  const positionSize = perUnitRisk ? riskAmount / perUnitRisk : 0;
   const positionValue = positionSize * e;
   const rewardPerUnit = e && t ? Math.abs(t - e) : 0;
   const rr = perUnitRisk && rewardPerUnit ? rewardPerUnit / perUnitRisk : 0;
-
   const fld = (label, val, set, ph) => (
     <div style={{ flex: "1 1 130px" }}>
       <div style={RS.label}>{label}</div>
@@ -143,7 +143,6 @@ function RiskCalc() {
         inputMode="decimal" style={RS.input} />
     </div>
   );
-
   return (
     <div style={S.card}>
       <div style={S.cardHead}>RİSK HESAPLAYICI</div>
@@ -156,7 +155,6 @@ function RiskCalc() {
         {fld("Stop-loss", stop, setStop, "0.00")}
         {fld("Hedef (ops.)", target, setTarget, "0.00")}
       </div>
-
       <div style={RS.results}>
         <div style={RS.resRow}>
           <span style={RS.resKey}>Riske atılan para</span>
@@ -189,14 +187,15 @@ function RiskCalc() {
       </div>
       <div style={RS.hint}>
         Genel kural: tek işlemde sermayenin %1–2'sinden fazlasını riske atma.
-        Risk/Ödül oranı en az 1:2 olan işlemler tercih edilir. Bunlar kesin
-        kural değil, sadece disiplin için referans.
+        Risk/Ödül oranı en az 1:2 olan işlemler tercih edilir. Kesin kural değil,
+        sadece disiplin için referans.
       </div>
     </div>
   );
 }
 
 export default function App() {
+  const [available, setAvailable] = useState([]); // geçerli USDT coinleri
   const [watch, setWatch] = useState(["BTCUSDT", "ETHUSDT", "SOLUSDT"]);
   const [interval, setIntervalSel] = useState(INTERVALS[1]);
   const [rows, setRows] = useState({});
@@ -204,8 +203,39 @@ export default function App() {
   const [soundOn, setSoundOn] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [flash, setFlash] = useState(null);
+  const [loadingList, setLoadingList] = useState(true);
   const prevVerdicts = useRef({});
   const timerRef = useRef(null);
+
+  // Açılışta Binance'ten geçerli USDT çiftlerini çek, WISH ile kesiştir
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("https://api.binance.com/api/v3/exchangeInfo");
+        const data = await res.json();
+        const validUsdt = new Set(
+          data.symbols
+            .filter((s) => s.quoteAsset === "USDT" && s.status === "TRADING")
+            .map((s) => s.baseAsset)
+        );
+        const list = WISH.filter((b) => validUsdt.has(b))
+          .map((b) => ({ sym: b + "USDT", label: b }));
+        // tekrarsız
+        const seen = new Set();
+        const uniq = list.filter((c) => !seen.has(c.sym) && seen.add(c.sym));
+        setAvailable(uniq);
+      } catch {
+        // başarısız olursa en azından çekirdek liste
+        setAvailable(["BTC","ETH","SOL","XRP","DOGE","BNB","ADA","AVAX"]
+          .map((b) => ({ sym: b + "USDT", label: b })));
+      } finally {
+        setLoadingList(false);
+      }
+    })();
+  }, []);
+
+  const labelOf = (sym) =>
+    available.find((c) => c.sym === sym)?.label || sym.replace("USDT", "");
 
   const loadAll = useCallback(async () => {
     const results = {};
@@ -239,7 +269,7 @@ export default function App() {
   const toggle = (sym) =>
     setWatch((w) => (w.includes(sym) ? w.filter((s) => s !== sym) : [...w, sym]));
 
-  const filtered = ALL_COINS.filter((c) =>
+  const filtered = available.filter((c) =>
     c.label.toLowerCase().includes(search.toLowerCase())
   );
 
@@ -299,7 +329,7 @@ export default function App() {
 
         {flash && (
           <div style={{ ...S.flash, borderColor: TONE[flash.tone], color: TONE[flash.tone] }}>
-            ⚡ Yeni sinyal: {ALL_COINS.find((c) => c.sym === flash.sym)?.label} → {flash.verdict}
+            ⚡ Yeni sinyal: {labelOf(flash.sym)} → {flash.verdict}
           </div>
         )}
 
@@ -308,10 +338,9 @@ export default function App() {
           {watch.length === 0 && <div style={S.muted}>Aşağıdan coin ekle.</div>}
           {watch.map((sym) => {
             const d = rows[sym];
-            const label = ALL_COINS.find((c) => c.sym === sym)?.label || sym;
             return (
               <div key={sym} className="row" style={S.row}>
-                <div style={{ flex: "0 0 56px", fontWeight: 700 }}>{label}</div>
+                <div style={{ flex: "0 0 70px", fontWeight: 700 }}>{labelOf(sym)}</div>
                 <div style={{ flex: 1, color: "#c9cfd9" }}>{d?.error ? "—" : fmt(d?.price)}</div>
                 <div style={{ flex: "0 0 70px", textAlign: "right",
                   color: !d || d.error ? "#5a606e" : d.change >= 0 ? "#00e08a" : "#ff4d6d" }}>
@@ -333,11 +362,10 @@ export default function App() {
           {watch.map((sym) => {
             const d = rows[sym];
             if (!d?.sig) return null;
-            const label = ALL_COINS.find((c) => c.sym === sym)?.label || sym;
             return (
               <div key={sym} style={S.detail}>
                 <div style={S.detailHead}>
-                  <span style={{ fontWeight: 700 }}>{label}/USDT</span>
+                  <span style={{ fontWeight: 700 }}>{labelOf(sym)}/USDT</span>
                   <span style={{ ...S.badge, color: TONE[d.sig.tone], borderColor: TONE[d.sig.tone] }}>
                     {d.sig.verdict}
                   </span>
@@ -353,25 +381,36 @@ export default function App() {
         <RiskCalc />
 
         <div style={S.card}>
-          <div style={S.cardHead}>COIN EKLE / ÇIKAR</div>
-          <input value={search} onChange={(e) => setSearch(e.target.value)}
-            placeholder="Ara… (örn. SOL)" style={S.input} />
-          <div style={S.grid}>
-            {filtered.map((c) => (
-              <button key={c.sym} className="chip" onClick={() => toggle(c.sym)}
-                style={{ ...S.gridChip, borderColor: watch.includes(c.sym) ? "#00e08a" : "#23262f",
-                  color: watch.includes(c.sym) ? "#00e08a" : "#9098a6" }}>
-                {watch.includes(c.sym) ? "✓ " : ""}{c.label}
-              </button>
-            ))}
+          <div style={S.cardHead}>
+            COIN EKLE / ÇIKAR {available.length > 0 && `(${available.length} coin)`}
           </div>
+          {loadingList ? (
+            <div style={S.muted}>Geçerli coinler yükleniyor…</div>
+          ) : (
+            <>
+              <input value={search} onChange={(e) => setSearch(e.target.value)}
+                placeholder="Ara… (örn. PEPE)" style={S.input} />
+              <div style={S.grid}>
+                {filtered.map((c) => (
+                  <button key={c.sym} className="chip" onClick={() => toggle(c.sym)}
+                    style={{ ...S.gridChip, borderColor: watch.includes(c.sym) ? "#00e08a" : "#23262f",
+                      color: watch.includes(c.sym) ? "#00e08a" : "#9098a6" }}>
+                    {watch.includes(c.sym) ? "✓ " : ""}{c.label}
+                  </button>
+                ))}
+                {filtered.length === 0 && <div style={S.muted}>Eşleşen coin yok.</div>}
+              </div>
+            </>
+          )}
         </div>
 
         <div style={S.disclaimer}>
-          Bu araç yalnızca eğitim amaçlıdır. Sinyaller basit teknik göstergelere
-          (RSI, EMA, MACD, Bollinger) dayanır, yatırım tavsiyesi değildir ve
-          yanılabilir. Hesabına bağlanmaz, emir vermez — kararı ve işlemi sen
-          kendi hesabında verirsin. Kaybetmeyi göze alamayacağın parayla işlem yapma.
+          Bu araç yalnızca eğitim amaçlıdır. Sadece Binance'te USDT karşılığı
+          işlem gören coinler gösterilir; listendeki bazı varlıklar burada
+          olmayabilir. Sinyaller basit teknik göstergelere dayanır, yatırım
+          tavsiyesi değildir ve yanılabilir. Hesabına bağlanmaz, emir vermez —
+          kararı ve işlemi sen kendi hesabında verirsin. Çok küçük/yeni coinlerde
+          göstergeler güvenilmez sonuç verir.
         </div>
       </div>
     </div>
