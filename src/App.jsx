@@ -42,7 +42,7 @@ async function closesBybit(base, iv) {
   const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${base}USDT&interval=${BYBIT_IV[iv]}&limit=100`;
   const r = await fetch(url); if (!r.ok) throw new Error("x");
   const j = await r.json();
-  const list = j?.result?.list;
+  const list = j && j.result && j.result.list;
   if (!Array.isArray(list) || !list.length) throw new Error("empty");
   // Bybit en yeni->eski sırada; ters çevir. her satır: [start, open, high, low, close, ...]
   return list.slice().reverse().map((k) => parseFloat(k[4]));
@@ -60,14 +60,14 @@ const exchangeCache = {};
 async function resolveExchange(base, iv) {
   if (exchangeCache[base]) {
     const ex = EXCHANGES.find((e) => e.id === exchangeCache[base]);
-    try { return { closes: await ex.fn(base, iv), ex: ex.id }; } catch {}
+    try { return { closes: await ex.fn(base, iv), ex: ex.id }; } catch (e) {}
   }
   for (const ex of EXCHANGES) {
     try {
       const closes = await ex.fn(base, iv);
       exchangeCache[base] = ex.id;
       return { closes, ex: ex.id };
-    } catch {}
+    } catch (e) {}
   }
   throw new Error("hiçbir borsada yok");
 }
@@ -181,7 +181,7 @@ async function fetchCoin(base, interval) {
     const dirs = await Promise.all(
       MTF.map(async (iv) => {
         try { const cc = await exObj.fn(base, iv); const s = buildSignal(cc); return s ? s.dir : 0; }
-        catch { return 0; }
+        catch (e) { return 0; }
       })
     );
     const ups = dirs.filter((d) => d > 0).length;
@@ -192,7 +192,7 @@ async function fetchCoin(base, interval) {
     else if (ups > downs) { align = "çoğunluk yukarı"; atone = "buy"; }
     else if (downs > ups) { align = "çoğunluk aşağı"; atone = "sell"; }
     mtf = { dirs, align, atone, agree: Math.max(ups, downs), total: MTF.length };
-  } catch {}
+  } catch (e) {}
   return { closes, price, change: ((price - prev) / prev) * 100, sig, mtf, ex };
 }
 
@@ -276,7 +276,7 @@ export default function App() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (Array.isArray(saved) && saved.length) return saved;
-    } catch {}
+    } catch (e) {}
     return ["BTC", "ETH", "SOL"];
   });
   const [interval, setIntervalSel] = useState(INTERVALS[1]);
@@ -287,11 +287,13 @@ export default function App() {
   const [flash, setFlash] = useState(null);
   const [adding, setAdding] = useState(false);
   const [addMsg, setAddMsg] = useState("");
+  const [sortMode, setSortMode] = useState("default"); // default | strong | alpha
+  const [filterMode, setFilterMode] = useState("all"); // all | buy | sell | strong
   const prevVerdicts = useRef({});
   const timerRef = useRef(null);
 
   useEffect(() => {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(watch)); } catch {}
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(watch)); } catch (e) {}
   }, [watch]);
 
   const loadAll = useCallback(async () => {
@@ -299,7 +301,7 @@ export default function App() {
     await Promise.all(
       watch.map(async (base) => {
         try { results[base] = await fetchCoin(base, interval.v); }
-        catch { results[base] = { error: true }; }
+        catch (e) { results[base] = { error: true }; }
       })
     );
     Object.entries(results).forEach(([base, d]) => {
@@ -325,6 +327,23 @@ export default function App() {
 
   const remove = (base) => setWatch((w) => w.filter((s) => s !== base));
 
+  // Filtre + sıralama uygulanmış görüntü listesi
+  const buildDisplayList = () => {
+    let list = watch.map((base) => ({ base, d: rows[base] }));
+    // filtre
+    if (filterMode === "buy") list = list.filter((x) => x.d?.sig?.verdict === "AL");
+    else if (filterMode === "sell") list = list.filter((x) => x.d?.sig?.verdict === "SAT");
+    else if (filterMode === "strong") list = list.filter((x) => x.d?.sig?.confidence === "güçlü");
+    // sıralama
+    if (sortMode === "strong") {
+      list.sort((a, b) => (b.d?.sig?.strength || 0) - (a.d?.sig?.strength || 0));
+    } else if (sortMode === "alpha") {
+      list.sort((a, b) => a.base.localeCompare(b.base));
+    }
+    return list;
+  };
+  const displayList = buildDisplayList();
+
   // Coin ekle: yazdığın sembolü borsalarda ara
   const tryAdd = async () => {
     const base = search.trim().toUpperCase();
@@ -336,7 +355,7 @@ export default function App() {
       setWatch((w) => [...w, base]);
       setAddMsg(`${base} eklendi (${r.ex}).`);
       setSearch("");
-    } catch {
+    } catch (e) {
       setAddMsg(`"${base}" hiçbir borsada (Binance/MEXC/Gate/Bybit) USDT çiftiyle bulunamadı.`);
     } finally { setAdding(false); }
   };
@@ -423,9 +442,31 @@ export default function App() {
 
         <div style={S.card}>
           <div style={S.cardHead}>İZLEME LİSTESİ ({watch.length})</div>
+
+          <div style={S.filterBar}>
+            <span style={S.filterLabel}>Sırala:</span>
+            {[["default","Varsayılan"],["strong","En güçlü"],["alpha","A-Z"]].map(([v,l]) => (
+              <button key={v} className="chip" onClick={() => setSortMode(v)}
+                style={{ ...S.filterChip, borderColor: sortMode === v ? "#5b8def" : "#23262f",
+                  color: sortMode === v ? "#5b8def" : "#9098a6" }}>{l}</button>
+            ))}
+          </div>
+          <div style={S.filterBar}>
+            <span style={S.filterLabel}>Filtre:</span>
+            {[["all","Hepsi"],["buy","Sadece AL"],["sell","Sadece SAT"],["strong","Güçlü"]].map(([v,l]) => {
+              const col = v === "buy" ? "#00e08a" : v === "sell" ? "#ff4d6d" : "#f0c040";
+              return (
+                <button key={v} className="chip" onClick={() => setFilterMode(v)}
+                  style={{ ...S.filterChip, borderColor: filterMode === v ? col : "#23262f",
+                    color: filterMode === v ? col : "#9098a6" }}>{l}</button>
+              );
+            })}
+          </div>
+
           {watch.length === 0 && <div style={S.muted}>Yukarıdan coin ara ve ekle.</div>}
-          {watch.map((base) => {
-            const d = rows[base];
+          {watch.length > 0 && displayList.length === 0 &&
+            <div style={S.muted}>Bu filtreye uyan coin yok.</div>}
+          {displayList.map(({ base, d }) => {
             return (
               <div key={base} className="row" style={S.row}>
                 <div style={{ flex: "0 0 70px", fontWeight: 700 }}>{base}</div>
@@ -448,8 +489,7 @@ export default function App() {
         </div>
 
         <div className="detail-grid">
-          {watch.map((base) => {
-            const d = rows[base];
+          {displayList.map(({ base, d }) => {
             if (!d?.sig) return null;
             const sig = d.sig;
             return (
@@ -529,6 +569,9 @@ const S = {
   flash: { border: "2px solid", borderRadius: 10, padding: "10px 14px", marginBottom: 14, fontSize: 14, fontWeight: 700, animation: "slideIn .3s ease" },
   card: { background: "linear-gradient(180deg,#14171f,#10131a)", border: "1px solid #23262f", borderRadius: 16, padding: 18, marginBottom: 14, maxWidth: 720 },
   cardHead: { fontSize: 10, letterSpacing: 1.5, color: "#7a8190", marginBottom: 10 },
+  filterBar: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 8 },
+  filterLabel: { fontSize: 11, color: "#5a606e", marginRight: 2, minWidth: 42 },
+  filterChip: { background: "#14171f", border: "1px solid #23262f", borderRadius: 7, padding: "4px 11px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
   row: { display: "flex", alignItems: "center", padding: "11px 8px", borderRadius: 8, fontSize: 14, gap: 4 },
   badge: { fontSize: 11, fontWeight: 800, letterSpacing: 1, border: "1px solid", borderRadius: 6, padding: "2px 8px" },
   exTag: { fontSize: 9.5, fontWeight: 700, border: "1px solid", borderRadius: 5, padding: "1px 6px", marginLeft: 8, letterSpacing: 0.5 },
