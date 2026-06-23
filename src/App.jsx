@@ -5,8 +5,74 @@ const INTERVALS = [
   { v: "4h", label: "4sa" }, { v: "1d", label: "1gün" },
 ];
 const MTF = ["1h", "4h", "1d"];
-const STORAGE_KEY = "kripto_watch_v1";
+const STORAGE_KEY = "kripto_watch_v2";
 
+// ── Borsa adaptörleri ──────────────────────────────────────
+// Her biri base coin ("BTC") + interval ("1h") alır, kapanış fiyatları dizisi döndürür.
+// Binance interval kodları standart; diğerleri eşlenir.
+
+const BINANCE_IV = { "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d" };
+const MEXC_IV    = { "15m": "15m", "1h": "60m", "4h": "4h", "1d": "1d" };
+const GATE_IV    = { "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d" };
+const BYBIT_IV   = { "15m": "15", "1h": "60", "4h": "240", "1d": "D" };
+
+async function closesBinance(base, iv) {
+  const url = `https://api.binance.com/api/v3/klines?symbol=${base}USDT&interval=${BINANCE_IV[iv]}&limit=100`;
+  const r = await fetch(url); if (!r.ok) throw new Error("x");
+  const j = await r.json();
+  if (!Array.isArray(j) || !j.length) throw new Error("empty");
+  return j.map((k) => parseFloat(k[4]));
+}
+async function closesMexc(base, iv) {
+  const url = `https://api.mexc.com/api/v3/klines?symbol=${base}USDT&interval=${MEXC_IV[iv]}&limit=100`;
+  const r = await fetch(url); if (!r.ok) throw new Error("x");
+  const j = await r.json();
+  if (!Array.isArray(j) || !j.length) throw new Error("empty");
+  return j.map((k) => parseFloat(k[4]));
+}
+async function closesGate(base, iv) {
+  const url = `https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=${base}_USDT&interval=${GATE_IV[iv]}&limit=100`;
+  const r = await fetch(url); if (!r.ok) throw new Error("x");
+  const j = await r.json();
+  if (!Array.isArray(j) || !j.length) throw new Error("empty");
+  // Gate dizisi: [time, volume, close, high, low, open, ...] -> close index 2
+  return j.map((k) => parseFloat(k[2]));
+}
+async function closesBybit(base, iv) {
+  const url = `https://api.bybit.com/v5/market/kline?category=spot&symbol=${base}USDT&interval=${BYBIT_IV[iv]}&limit=100`;
+  const r = await fetch(url); if (!r.ok) throw new Error("x");
+  const j = await r.json();
+  const list = j?.result?.list;
+  if (!Array.isArray(list) || !list.length) throw new Error("empty");
+  // Bybit en yeni->eski sırada; ters çevir. her satır: [start, open, high, low, close, ...]
+  return list.slice().reverse().map((k) => parseFloat(k[4]));
+}
+
+const EXCHANGES = [
+  { id: "Binance", fn: closesBinance },
+  { id: "MEXC", fn: closesMexc },
+  { id: "Gate", fn: closesGate },
+  { id: "Bybit", fn: closesBybit },
+];
+
+// Bir coinin hangi borsada olduğunu bul (cache'li)
+const exchangeCache = {};
+async function resolveExchange(base, iv) {
+  if (exchangeCache[base]) {
+    const ex = EXCHANGES.find((e) => e.id === exchangeCache[base]);
+    try { return { closes: await ex.fn(base, iv), ex: ex.id }; } catch {}
+  }
+  for (const ex of EXCHANGES) {
+    try {
+      const closes = await ex.fn(base, iv);
+      exchangeCache[base] = ex.id;
+      return { closes, ex: ex.id };
+    } catch {}
+  }
+  throw new Error("hiçbir borsada yok");
+}
+
+// ── Göstergeler ────────────────────────────────────────────
 function calcRSI(c, p = 14) {
   if (c.length < p + 1) return null;
   let g = 0, l = 0;
@@ -104,26 +170,18 @@ function buildSignal(c) {
   return { rsi, verdict, tone, reasons, score, confidence, strength, price, stop, dir: Math.sign(score) };
 }
 
-async function fetchCloses(sym, interval) {
-  const url = `https://api.binance.com/api/v3/klines?symbol=${sym}&interval=${interval}&limit=100`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("fail");
-  const raw = await res.json();
-  return raw.map((k) => parseFloat(k[4]));
-}
-
-async function fetchCoin(sym, interval) {
-  const closes = await fetchCloses(sym, interval);
+async function fetchCoin(base, interval) {
+  const { closes, ex } = await resolveExchange(base, interval);
   const price = closes[closes.length - 1];
   const prev = closes[closes.length - 2];
   const sig = buildSignal(closes);
   let mtf = null;
   try {
+    const exObj = EXCHANGES.find((e) => e.id === ex);
     const dirs = await Promise.all(
       MTF.map(async (iv) => {
-        const cc = await fetchCloses(sym, iv);
-        const s = buildSignal(cc);
-        return s ? s.dir : 0;
+        try { const cc = await exObj.fn(base, iv); const s = buildSignal(cc); return s ? s.dir : 0; }
+        catch { return 0; }
       })
     );
     const ups = dirs.filter((d) => d > 0).length;
@@ -135,11 +193,12 @@ async function fetchCoin(sym, interval) {
     else if (downs > ups) { align = "çoğunluk aşağı"; atone = "sell"; }
     mtf = { dirs, align, atone, agree: Math.max(ups, downs), total: MTF.length };
   } catch {}
-  return { closes, price, change: ((price - prev) / prev) * 100, sig, mtf };
+  return { closes, price, change: ((price - prev) / prev) * 100, sig, mtf, ex };
 }
 
 const TONE = { buy: "#00e08a", sell: "#ff4d6d", hold: "#f0c040" };
 const CONF_COLOR = { "zayıf": "#7a8190", "orta": "#f0c040", "güçlü": "#00e08a" };
+const EX_COLOR = { Binance: "#f0b90b", MEXC: "#1972f5", Gate: "#e6486a", Bybit: "#f7a600" };
 
 function beep(tone) {
   try {
@@ -162,11 +221,8 @@ function RiskCalc() {
   const [entry, setEntry] = useState("");
   const [stop, setStop] = useState("");
   const [target, setTarget] = useState("");
-  const cap = parseFloat(capital) || 0;
-  const rp = parseFloat(riskPct) || 0;
-  const e = parseFloat(entry) || 0;
-  const s = parseFloat(stop) || 0;
-  const t = parseFloat(target) || 0;
+  const cap = parseFloat(capital) || 0, rp = parseFloat(riskPct) || 0;
+  const e = parseFloat(entry) || 0, s = parseFloat(stop) || 0, t = parseFloat(target) || 0;
   const riskAmount = cap * (rp / 100);
   const perUnitRisk = e && s ? Math.abs(e - s) : 0;
   const lossPct = e && s ? (Math.abs(e - s) / e) * 100 : 0;
@@ -194,52 +250,34 @@ function RiskCalc() {
         {fld("Hedef (ops.)", target, setTarget, "0.00")}
       </div>
       <div style={RS.results}>
-        <div style={RS.resRow}>
-          <span style={RS.resKey}>Riske atılan para</span>
-          <span style={RS.resVal}>${riskAmount.toFixed(2)}</span>
-        </div>
+        <div style={RS.resRow}><span style={RS.resKey}>Riske atılan para</span><span style={RS.resVal}>${riskAmount.toFixed(2)}</span></div>
         {perUnitRisk > 0 && (
           <>
-            <div style={RS.resRow}>
-              <span style={RS.resKey}>Stop mesafesi</span>
-              <span style={RS.resVal}>{lossPct.toFixed(2)}%</span>
-            </div>
-            <div style={RS.resRow}>
-              <span style={RS.resKey}>Alınacak miktar</span>
-              <span style={RS.resVal}>{positionSize.toLocaleString("en-US", { maximumFractionDigits: 4 })} birim</span>
-            </div>
-            <div style={RS.resRow}>
-              <span style={RS.resKey}>Pozisyon değeri</span>
-              <span style={RS.resVal}>${positionValue.toFixed(2)}</span>
-            </div>
+            <div style={RS.resRow}><span style={RS.resKey}>Stop mesafesi</span><span style={RS.resVal}>{lossPct.toFixed(2)}%</span></div>
+            <div style={RS.resRow}><span style={RS.resKey}>Alınacak miktar</span><span style={RS.resVal}>{positionSize.toLocaleString("en-US", { maximumFractionDigits: 4 })} birim</span></div>
+            <div style={RS.resRow}><span style={RS.resKey}>Pozisyon değeri</span><span style={RS.resVal}>${positionValue.toFixed(2)}</span></div>
           </>
         )}
         {rr > 0 && (
-          <div style={RS.resRow}>
-            <span style={RS.resKey}>Risk / Ödül</span>
-            <span style={{ ...RS.resVal, color: rr >= 2 ? "#00e08a" : rr >= 1 ? "#f0c040" : "#ff4d6d" }}>
-              1 : {rr.toFixed(2)}
-            </span>
-          </div>
+          <div style={RS.resRow}><span style={RS.resKey}>Risk / Ödül</span>
+            <span style={{ ...RS.resVal, color: rr >= 2 ? "#00e08a" : rr >= 1 ? "#f0c040" : "#ff4d6d" }}>1 : {rr.toFixed(2)}</span></div>
         )}
       </div>
       <div style={RS.hint}>
         Genel kural: tek işlemde sermayenin %1–2'sinden fazlasını riske atma.
-        Risk/Ödül oranı en az 1:2 olan işlemler tercih edilir. Kesin kural değil,
-        sadece disiplin için referans.
+        Risk/Ödül oranı en az 1:2 olan işlemler tercih edilir. Kesin kural değil, referans.
       </div>
     </div>
   );
 }
 
 export default function App() {
-  const [allSymbols, setAllSymbols] = useState([]); // Binance'teki tüm USDT baseAsset'leri
   const [watch, setWatch] = useState(() => {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (Array.isArray(saved) && saved.length) return saved;
     } catch {}
-    return ["BTCUSDT", "ETHUSDT", "SOLUSDT"];
+    return ["BTC", "ETH", "SOL"];
   });
   const [interval, setIntervalSel] = useState(INTERVALS[1]);
   const [rows, setRows] = useState({});
@@ -247,50 +285,32 @@ export default function App() {
   const [soundOn, setSoundOn] = useState(true);
   const [lastUpdate, setLastUpdate] = useState(null);
   const [flash, setFlash] = useState(null);
-  const [loadingList, setLoadingList] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [addMsg, setAddMsg] = useState("");
   const prevVerdicts = useRef({});
   const timerRef = useRef(null);
 
-  // İzleme listesini kalıcı sakla
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(watch)); } catch {}
   }, [watch]);
 
-  // Açılışta Binance'in TÜM geçerli USDT coinlerini çek
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await fetch("https://api.binance.com/api/v3/exchangeInfo");
-        const data = await res.json();
-        const bases = data.symbols
-          .filter((s) => s.quoteAsset === "USDT" && s.status === "TRADING")
-          .map((s) => s.baseAsset);
-        setAllSymbols([...new Set(bases)].sort());
-      } catch {
-        setAllSymbols(["BTC","ETH","SOL","XRP","DOGE","BNB","ADA","AVAX"]);
-      } finally { setLoadingList(false); }
-    })();
-  }, []);
-
-  const labelOf = (sym) => sym.replace("USDT", "");
-
   const loadAll = useCallback(async () => {
     const results = {};
     await Promise.all(
-      watch.map(async (sym) => {
-        try { results[sym] = await fetchCoin(sym, interval.v); }
-        catch { results[sym] = { error: true }; }
+      watch.map(async (base) => {
+        try { results[base] = await fetchCoin(base, interval.v); }
+        catch { results[base] = { error: true }; }
       })
     );
-    Object.entries(results).forEach(([sym, d]) => {
+    Object.entries(results).forEach(([base, d]) => {
       if (d.sig) {
-        const prev = prevVerdicts.current[sym];
+        const prev = prevVerdicts.current[base];
         if (prev && prev !== d.sig.verdict && d.sig.verdict !== "BEKLE") {
-          setFlash({ sym, verdict: d.sig.verdict, tone: d.sig.tone });
+          setFlash({ base, verdict: d.sig.verdict, tone: d.sig.tone });
           if (soundOn) beep(d.sig.tone);
           setTimeout(() => setFlash(null), 4000);
         }
-        prevVerdicts.current[sym] = d.sig.verdict;
+        prevVerdicts.current[base] = d.sig.verdict;
       }
     });
     setRows(results);
@@ -303,16 +323,23 @@ export default function App() {
     return () => clearInterval(timerRef.current);
   }, [loadAll]);
 
-  const add = (sym) => setWatch((w) => (w.includes(sym) ? w : [...w, sym]));
-  const remove = (sym) => setWatch((w) => w.filter((s) => s !== sym));
+  const remove = (base) => setWatch((w) => w.filter((s) => s !== base));
 
-  // Arama: tüm Binance USDT coinlerinde, izlemede olmayanlardan ilk 40 sonuç
-  const q = search.trim().toUpperCase();
-  const searchResults = q
-    ? allSymbols
-        .filter((b) => b.includes(q) && !watch.includes(b + "USDT"))
-        .slice(0, 40)
-    : [];
+  // Coin ekle: yazdığın sembolü borsalarda ara
+  const tryAdd = async () => {
+    const base = search.trim().toUpperCase();
+    if (!base) return;
+    if (watch.includes(base)) { setAddMsg(`${base} zaten listede.`); return; }
+    setAdding(true); setAddMsg("Borsalarda aranıyor…");
+    try {
+      const r = await resolveExchange(base, interval.v);
+      setWatch((w) => [...w, base]);
+      setAddMsg(`${base} eklendi (${r.ex}).`);
+      setSearch("");
+    } catch {
+      setAddMsg(`"${base}" hiçbir borsada (Binance/MEXC/Gate/Bybit) USDT çiftiyle bulunamadı.`);
+    } finally { setAdding(false); }
+  };
 
   return (
     <div style={S.page}>
@@ -366,75 +393,67 @@ export default function App() {
 
         {flash && (
           <div style={{ ...S.flash, borderColor: TONE[flash.tone], color: TONE[flash.tone] }}>
-            ⚡ Yeni sinyal: {labelOf(flash.sym)} → {flash.verdict}
+            ⚡ Yeni sinyal: {flash.base} → {flash.verdict}
           </div>
         )}
 
-        {/* Coin ARAMA / EKLEME — en üste taşındı, kolay erişim */}
         <div style={S.card}>
-          <div style={S.cardHead}>
-            COIN ARA VE EKLE {!loadingList && allSymbols.length > 0 && `(${allSymbols.length} coin mevcut)`}
+          <div style={S.cardHead}>COIN ARA VE EKLE (Binance · MEXC · Gate · Bybit)</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && tryAdd()}
+              placeholder="Coin sembolü yaz (örn. WIF, PEPE, MONKY)…" style={{ ...S.input, marginBottom: 0, flex: 1 }} />
+            <button className="chip" onClick={tryAdd} disabled={adding}
+              style={{ ...S.addBtn, opacity: adding ? 0.6 : 1 }}>
+              {adding ? "…" : "+ Ekle"}
+            </button>
           </div>
-          {loadingList ? (
-            <div style={S.muted}>Binance coin listesi yükleniyor…</div>
-          ) : (
-            <>
-              <input value={search} onChange={(e) => setSearch(e.target.value)}
-                placeholder="Coin yaz (örn. WIF, PEPE, BTC)…" style={S.input} />
-              {q && (
-                <div style={S.grid}>
-                  {searchResults.map((b) => (
-                    <button key={b} className="chip" onClick={() => { add(b + "USDT"); }}
-                      style={{ ...S.gridChip, borderColor: "#23262f", color: "#9098a6" }}>
-                      + {b}
-                    </button>
-                  ))}
-                  {searchResults.length === 0 && (
-                    <div style={S.muted}>"{q}" için sonuç yok (zaten ekli olabilir veya Binance'te USDT çifti yok).</div>
-                  )}
-                </div>
-              )}
-              {!q && <div style={S.muted}>Yukarıya bir coin adı yazınca eşleşenler çıkar, dokununca eklenir.</div>}
-            </>
-          )}
+          {addMsg && <div style={{ ...S.muted, marginTop: 8 }}>{addMsg}</div>}
+          {!addMsg && <div style={{ ...S.muted, marginTop: 8 }}>
+            Sembolü yazıp Ekle'ye bas. Önce Binance, yoksa MEXC, Gate, Bybit'te aranır.
+          </div>}
         </div>
 
         <div style={S.card}>
           <div style={S.cardHead}>İZLEME LİSTESİ ({watch.length})</div>
           {watch.length === 0 && <div style={S.muted}>Yukarıdan coin ara ve ekle.</div>}
-          {watch.map((sym) => {
-            const d = rows[sym];
+          {watch.map((base) => {
+            const d = rows[base];
             return (
-              <div key={sym} className="row" style={S.row}>
-                <div style={{ flex: "0 0 70px", fontWeight: 700 }}>{labelOf(sym)}</div>
+              <div key={base} className="row" style={S.row}>
+                <div style={{ flex: "0 0 70px", fontWeight: 700 }}>{base}</div>
                 <div style={{ flex: 1, color: "#c9cfd9" }}>{d?.error ? "—" : fmtPrice(d?.price)}</div>
-                <div style={{ flex: "0 0 64px", textAlign: "right",
+                <div style={{ flex: "0 0 60px", textAlign: "right",
                   color: !d || d.error ? "#5a606e" : d.change >= 0 ? "#00e08a" : "#ff4d6d" }}>
                   {d && !d.error ? `${d.change >= 0 ? "+" : ""}${d.change.toFixed(2)}%` : ""}
                 </div>
-                <div style={{ flex: "0 0 58px", textAlign: "right" }}>
+                <div style={{ flex: "0 0 54px", textAlign: "right" }}>
                   {d?.sig && (
                     <span style={{ ...S.badge, color: TONE[d.sig.tone], borderColor: TONE[d.sig.tone] }}>
                       {d.sig.verdict}
                     </span>
                   )}
                 </div>
-                <button onClick={() => remove(sym)} title="Listeden çıkar"
-                  style={S.removeBtn} className="chip">✕</button>
+                <button onClick={() => remove(base)} style={S.removeBtn} className="chip">✕ Kaldır</button>
               </div>
             );
           })}
         </div>
 
         <div className="detail-grid">
-          {watch.map((sym) => {
-            const d = rows[sym];
+          {watch.map((base) => {
+            const d = rows[base];
             if (!d?.sig) return null;
             const sig = d.sig;
             return (
-              <div key={sym} style={S.detail}>
+              <div key={base} style={S.detail}>
                 <div style={S.detailHead}>
-                  <span style={{ fontWeight: 700 }}>{labelOf(sym)}/USDT</span>
+                  <span style={{ fontWeight: 700 }}>
+                    {base}/USDT
+                    {d.ex && <span style={{ ...S.exTag, color: EX_COLOR[d.ex] || "#9098a6",
+                      borderColor: EX_COLOR[d.ex] || "#23262f" }}>{d.ex}</span>}
+                  </span>
                   <span style={{ ...S.badge, color: TONE[sig.tone], borderColor: TONE[sig.tone] }}>
                     {sig.verdict}
                   </span>
@@ -460,9 +479,7 @@ export default function App() {
                 {sig.stop != null && sig.dir !== 0 && (
                   <div style={S.metaRow}>
                     <span style={S.metaKey}>Önerilen stop-loss</span>
-                    <span style={{ color: "#c9cfd9", fontWeight: 700, fontSize: 12.5 }}>
-                      {fmtPrice(sig.stop)}
-                    </span>
+                    <span style={{ color: "#c9cfd9", fontWeight: 700, fontSize: 12.5 }}>{fmtPrice(sig.stop)}</span>
                   </div>
                 )}
                 <ul style={S.reasons}>
@@ -477,11 +494,13 @@ export default function App() {
 
         <div style={S.disclaimer}>
           Bu araç teknik göstergeleri (RSI, EMA, MACD, Bollinger) tek bir görünümde
-          birleştirir; güven skoru, zaman aralığı uyumu ve oynaklığa dayalı stop-loss
-          önerisi de bu göstergelerin hesabıdır — gelecek hakkında kesinlik değildir.
-          Sinyaller yanılabilir ve bu bir yatırım tavsiyesi değildir. Sadece Binance'te
-          USDT karşılığı işlem gören coinler gösterilir. Kararı ve işlemi sen kendi
-          hesabında verirsin; risk yönetimi (stop-loss, pozisyon büyüklüğü) belirleyicidir.
+          birleştirir; güven skoru, zaman uyumu ve oynaklığa dayalı stop-loss önerisi
+          de bu göstergelerin hesabıdır — gelecek hakkında kesinlik değildir. Veriler
+          Binance, MEXC, Gate.io ve Bybit'in halka açık fiyatlarından gelir; coin
+          birden çok borsada varsa fiyat ve sinyal hafifçe farklılaşabilir. Küçük/yeni
+          ve düşük hacimli coinlerde göstergeler güvenilmez sonuç verir. Bu bir yatırım
+          tavsiyesi değildir, sinyaller yanılabilir. Kararı ve işlemi sen kendi hesabında
+          verirsin; risk yönetimi belirleyicidir.
         </div>
       </div>
     </div>
@@ -506,8 +525,11 @@ const S = {
   cardHead: { fontSize: 10, letterSpacing: 1.5, color: "#7a8190", marginBottom: 10 },
   row: { display: "flex", alignItems: "center", padding: "11px 8px", borderRadius: 8, fontSize: 14, gap: 4 },
   badge: { fontSize: 11, fontWeight: 800, letterSpacing: 1, border: "1px solid", borderRadius: 6, padding: "2px 8px" },
-  removeBtn: { flex: "0 0 28px", background: "transparent", border: "1px solid #23262f", color: "#7a8190",
-    borderRadius: 6, padding: "4px 0", fontSize: 11, cursor: "pointer", marginLeft: 4 },
+  exTag: { fontSize: 9.5, fontWeight: 700, border: "1px solid", borderRadius: 5, padding: "1px 6px", marginLeft: 8, letterSpacing: 0.5 },
+  addBtn: { background: "rgba(0,224,138,0.12)", border: "1px solid #00e08a", color: "#00e08a",
+    borderRadius: 8, padding: "0 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" },
+  removeBtn: { flex: "0 0 auto", background: "rgba(255,77,109,0.12)", border: "1px solid #ff4d6d", color: "#ff4d6d",
+    borderRadius: 7, padding: "6px 12px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", marginLeft: 8, whiteSpace: "nowrap" },
   detail: { background: "#10131a", border: "1px solid #1c2029", borderRadius: 12, padding: 16 },
   detailHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
   metaRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontSize: 12 },
@@ -519,8 +541,7 @@ const S = {
   input: { width: "100%", boxSizing: "border-box", background: "#0c0e13", border: "1px solid #23262f",
     borderRadius: 8, padding: "10px 12px", color: "#e7eaf0", fontSize: 13, marginBottom: 12 },
   grid: { display: "flex", flexWrap: "wrap", gap: 6 },
-  gridChip: { background: "#14171f", border: "1px solid #23262f", borderRadius: 8, padding: "7px 13px", fontSize: 12.5, fontWeight: 600 },
-  muted: { color: "#7a8190", fontSize: 13 },
+  muted: { color: "#7a8190", fontSize: 12.5, lineHeight: 1.5 },
   disclaimer: { marginTop: 18, fontSize: 11, lineHeight: 1.6, color: "#5a606e", fontFamily: "system-ui,sans-serif", maxWidth: 720 },
 };
 
