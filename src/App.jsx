@@ -384,11 +384,17 @@ export default function App() {
               </button>
             ))}
           </div>
-          <button className="chip" onClick={() => setSoundOn((s) => !s)}
-            style={{ ...S.chipSm, borderColor: soundOn ? "#00e08a" : "#23262f",
-              color: soundOn ? "#00e08a" : "#7a8190" }}>
-            {soundOn ? "🔔 Ses açık" : "🔕 Ses kapalı"}
-          </button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button className="chip" onClick={() => loadAll()}
+              style={{ ...S.chipSm, borderColor: "#5b8def", color: "#5b8def" }}>
+              ⟳ Yenile
+            </button>
+            <button className="chip" onClick={() => setSoundOn((s) => !s)}
+              style={{ ...S.chipSm, borderColor: soundOn ? "#00e08a" : "#23262f",
+                color: soundOn ? "#00e08a" : "#7a8190" }}>
+              {soundOn ? "🔔 Ses açık" : "🔕 Ses kapalı"}
+            </button>
+          </div>
         </div>
 
         {flash && (
@@ -435,7 +441,7 @@ export default function App() {
                     </span>
                   )}
                 </div>
-                <button onClick={() => remove(base)} style={S.removeBtn} className="chip">✕ Kaldır</button>
+                <button onClick={() => remove(base)} style={S.removeBtn} className="chip">✕</button>
               </div>
             );
           })}
@@ -528,8 +534,8 @@ const S = {
   exTag: { fontSize: 9.5, fontWeight: 700, border: "1px solid", borderRadius: 5, padding: "1px 6px", marginLeft: 8, letterSpacing: 0.5 },
   addBtn: { background: "rgba(0,224,138,0.12)", border: "1px solid #00e08a", color: "#00e08a",
     borderRadius: 8, padding: "0 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" },
-  removeBtn: { flex: "0 0 auto", background: "rgba(255,77,109,0.12)", border: "1px solid #ff4d6d", color: "#ff4d6d",
-    borderRadius: 7, padding: "6px 12px", fontSize: 11.5, fontWeight: 700, cursor: "pointer", marginLeft: 8, whiteSpace: "nowrap" },
+  removeBtn: { flex: "0 0 auto", background: "rgba(255,77,109,0.10)", border: "1px solid #ff4d6d", color: "#ff4d6d",
+    borderRadius: 7, padding: "5px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", marginLeft: 8, whiteSpace: "nowrap" },
   detail: { background: "#10131a", border: "1px solid #1c2029", borderRadius: 12, padding: 16 },
   detailHead: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 },
   metaRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, fontSize: 12 },
