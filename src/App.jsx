@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { createChart, CandlestickSeries, LineSeries, HistogramSeries } from "lightweight-charts";
 
 const INTERVALS = [
   { v: "15m", label: "15dk" }, { v: "1h", label: "1sa" },
@@ -254,91 +253,6 @@ function beep(tone) {
   } catch (e) {}
 }
 
-// ── Mum grafiği bileşeni ───────────────────────────────────
-function CandleChart({ ohlc, closes }) {
-  const ref = useRef(null);
-  const chartRef = useRef(null);
-  useEffect(() => {
-    if (!ref.current || !ohlc || ohlc.length === 0) return;
-    const chart = createChart(ref.current, {
-      width: ref.current.clientWidth,
-      height: 280,
-      layout: { background: { color: "transparent" }, textColor: "#7a8190", fontSize: 10 },
-      grid: { vertLines: { color: "#1a1e27" }, horzLines: { color: "#1a1e27" } },
-      timeScale: { borderColor: "#23262f", timeVisible: true },
-      rightPriceScale: { borderColor: "#23262f" },
-      crosshair: { mode: 0 },
-    });
-    chartRef.current = chart;
-    const candle = chart.addSeries(CandlestickSeries, {
-      upColor: "#00e08a", downColor: "#ff4d6d",
-      borderUpColor: "#00e08a", borderDownColor: "#ff4d6d",
-      wickUpColor: "#00e08a", wickDownColor: "#ff4d6d",
-    });
-    candle.setData(ohlc);
-    // EMA20 ve EMA50 çizgileri
-    const e20 = emaFull(closes, 20), e50 = emaFull(closes, 50);
-    const line20 = chart.addSeries(LineSeries, { color: "#5b8def", lineWidth: 1 });
-    line20.setData(ohlc.map((d, i) => e20[i] != null ? { time: d.time, value: e20[i] } : null).filter(Boolean));
-    const line50 = chart.addSeries(LineSeries, { color: "#f0b90b", lineWidth: 1 });
-    line50.setData(ohlc.map((d, i) => e50[i] != null ? { time: d.time, value: e50[i] } : null).filter(Boolean));
-    chart.timeScale().fitContent();
-    const onResize = () => chart.applyOptions({ width: ref.current.clientWidth });
-    window.addEventListener("resize", onResize);
-    return () => { window.removeEventListener("resize", onResize); chart.remove(); };
-  }, [ohlc, closes]);
-  return <div ref={ref} style={{ width: "100%" }} />;
-}
-
-// ── RSI mini grafik ────────────────────────────────────────
-function RsiChart({ ohlc, closes }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    if (!ref.current || !ohlc || ohlc.length === 0) return;
-    const chart = createChart(ref.current, {
-      width: ref.current.clientWidth, height: 90,
-      layout: { background: { color: "transparent" }, textColor: "#7a8190", fontSize: 9 },
-      grid: { vertLines: { color: "#1a1e27" }, horzLines: { color: "#1a1e27" } },
-      timeScale: { visible: false },
-      rightPriceScale: { borderColor: "#23262f" },
-    });
-    const rsi = rsiSeries(closes);
-    const s = chart.addSeries(LineSeries, { color: "#a06bff", lineWidth: 1 });
-    s.setData(ohlc.map((d, i) => rsi[i] != null ? { time: d.time, value: rsi[i] } : null).filter(Boolean));
-    s.createPriceLine({ price: 70, color: "#ff4d6d", lineWidth: 1, lineStyle: 2 });
-    s.createPriceLine({ price: 30, color: "#00e08a", lineWidth: 1, lineStyle: 2 });
-    chart.timeScale().fitContent();
-    const onResize = () => chart.applyOptions({ width: ref.current.clientWidth });
-    window.addEventListener("resize", onResize);
-    return () => { window.removeEventListener("resize", onResize); chart.remove(); };
-  }, [ohlc, closes]);
-  return <div ref={ref} style={{ width: "100%" }} />;
-}
-
-// ── MACD mini grafik ───────────────────────────────────────
-function MacdChart({ ohlc, closes }) {
-  const ref = useRef(null);
-  useEffect(() => {
-    if (!ref.current || !ohlc || ohlc.length === 0) return;
-    const chart = createChart(ref.current, {
-      width: ref.current.clientWidth, height: 90,
-      layout: { background: { color: "transparent" }, textColor: "#7a8190", fontSize: 9 },
-      grid: { vertLines: { color: "#1a1e27" }, horzLines: { color: "#1a1e27" } },
-      timeScale: { visible: false },
-      rightPriceScale: { borderColor: "#23262f" },
-    });
-    const hist = macdHistFull(closes);
-    const s = chart.addSeries(HistogramSeries, {});
-    s.setData(ohlc.map((d, i) => hist[i] != null
-      ? { time: d.time, value: hist[i], color: hist[i] >= 0 ? "#00e08a" : "#ff4d6d" } : null).filter(Boolean));
-    chart.timeScale().fitContent();
-    const onResize = () => chart.applyOptions({ width: ref.current.clientWidth });
-    window.addEventListener("resize", onResize);
-    return () => { window.removeEventListener("resize", onResize); chart.remove(); };
-  }, [ohlc, closes]);
-  return <div ref={ref} style={{ width: "100%" }} />;
-}
-
 function RiskCalc() {
   const [capital, setCapital] = useState("1000");
   const [riskPct, setRiskPct] = useState("2");
@@ -539,17 +453,6 @@ export default function App() {
                 </button>
               ))}
             </div>
-
-            {/* mum grafiği + EMA */}
-            <div style={S.chartLabel}>
-              <span style={{ color: "#5b8def" }}>● EMA20</span>
-              <span style={{ color: "#f0b90b", marginLeft: 10 }}>● EMA50</span>
-            </div>
-            <CandleChart ohlc={sel.ohlc} closes={sel.closes} />
-            <div style={S.subLabel}>RSI 14</div>
-            <RsiChart ohlc={sel.ohlc} closes={sel.closes} />
-            <div style={S.subLabel}>MACD</div>
-            <MacdChart ohlc={sel.ohlc} closes={sel.closes} />
 
             {/* Sinyal kutusu */}
             <div style={{ ...S.signalBox, borderColor: TONE[sel.sig.tone] }}>
