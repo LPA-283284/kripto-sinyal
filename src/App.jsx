@@ -253,6 +253,27 @@ function beep(tone) {
   } catch (e) {}
 }
 
+// Basit düz çizgi fiyat grafiği
+function Sparkline({ closes, up }) {
+  if (!closes || closes.length < 2) return null;
+  const pts = closes.slice(-50);
+  const min = Math.min(...pts), max = Math.max(...pts);
+  const range = max - min || 1;
+  const w = 100, h = 40;
+  const path = pts.map((p, i) => {
+    const x = (i / (pts.length - 1)) * w;
+    const y = h - ((p - min) / range) * h;
+    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const color = up ? "#00e08a" : "#ff4d6d";
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none"
+      style={{ width: "100%", height: 56, margin: "10px 0 4px", display: "block" }}>
+      <path d={path} fill="none" stroke={color} strokeWidth="1" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
 function RiskCalc() {
   const [capital, setCapital] = useState("1000");
   const [riskPct, setRiskPct] = useState("2");
@@ -476,6 +497,15 @@ export default function App() {
                 </div>
               </div>
 
+              {/* Renkli güven çubuğu */}
+              <div style={S.barTrack}>
+                <div style={{ ...S.barFill, width: `${Math.round(sel.sig.strength * 100)}%`,
+                  background: CONF_COLOR[sel.sig.confidence] }} />
+              </div>
+
+              {/* Basit fiyat grafiği (sparkline) */}
+              <Sparkline closes={sel.closes} up={sel.change >= 0} />
+
               {sel.sig.dir !== 0 && (
                 <div style={S.tpGrid}>
                   <div style={S.tpCell}><div style={S.tpKey}>Giriş</div><div style={S.tpVal}>{fmtPrice(sel.sig.price)}</div></div>
@@ -584,6 +614,8 @@ const S = {
   subLabel: { fontSize: 10, color: "#7a8190", margin: "10px 0 2px", letterSpacing: 1 },
   signalBox: { border: "2px solid", borderRadius: 14, padding: 16, marginTop: 16, background: "#0b0e13" },
   signalTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 },
+  barTrack: { height: 8, background: "#1a1e27", borderRadius: 4, overflow: "hidden", marginBottom: 4 },
+  barFill: { height: "100%", borderRadius: 4, transition: "width .4s ease" },
   signalIcon: { width: 40, height: 40, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
     fontSize: 20, color: "#0b0e13", fontWeight: 900 },
   tpGrid: { display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 0", borderTop: "1px solid #1a1e27", borderBottom: "1px solid #1a1e27" },
