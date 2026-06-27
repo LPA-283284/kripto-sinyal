@@ -336,6 +336,80 @@ function RiskCalc() {
   );
 }
 
+function LeverageSim() {
+  const [margin, setMargin] = useState("100");
+  const [lev, setLev] = useState(10);
+  const [entry, setEntry] = useState("");
+  const LEVS = [2, 3, 5, 10, 25, 50, 100];
+  const m = parseFloat(margin) || 0;
+  const e = parseFloat(entry) || 0;
+  const position = m * lev;                 // pozisyon büyüklüğü
+  const liqPct = 100 / lev;                 // yaklaşık likidasyon yüzdesi
+  const liqLong = e ? e * (1 - liqPct / 100) : 0;  // long likidasyon fiyatı
+  const liqShort = e ? e * (1 + liqPct / 100) : 0; // short likidasyon fiyatı
+  // örnek: %5 ters hareket ne kaybettirir
+  const lossOn5 = m * lev * 0.05;
+  const lossPctOnMargin5 = lev * 5; // teminata oranla
+
+  const sevColor = lev >= 25 ? "#ff4d6d" : lev >= 10 ? "#f0a030" : lev >= 5 ? "#f0c040" : "#00e08a";
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardHead}>KALDIRAÇ RİSK SİMÜLATÖRÜ</div>
+
+      <div style={RS.row}>
+        <div style={{ flex: "1 1 130px" }}>
+          <div style={RS.label}>Teminat ($)</div>
+          <input value={margin} onChange={(ev) => setMargin(ev.target.value)} placeholder="100" inputMode="decimal" style={RS.input} />
+        </div>
+        <div style={{ flex: "1 1 130px" }}>
+          <div style={RS.label}>Giriş fiyatı (ops.)</div>
+          <input value={entry} onChange={(ev) => setEntry(ev.target.value)} placeholder="60000" inputMode="decimal" style={RS.input} />
+        </div>
+      </div>
+
+      <div style={{ ...RS.label, marginBottom: 6 }}>Kaldıraç</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
+        {LEVS.map((l) => (
+          <button key={l} className="chip" onClick={() => setLev(l)}
+            style={{ ...S.filterChip, borderColor: lev === l ? sevColor : "#23262f", color: lev === l ? sevColor : "#9098a6" }}>
+            {l}x
+          </button>
+        ))}
+      </div>
+
+      <div style={RS.results}>
+        <div style={RS.resRow}><span style={RS.resKey}>Pozisyon büyüklüğü</span><span style={RS.resVal}>${position.toLocaleString("en-US", { maximumFractionDigits: 2 })}</span></div>
+        <div style={RS.resRow}>
+          <span style={RS.resKey}>Likidasyon ≈ (ters hareket)</span>
+          <span style={{ ...RS.resVal, color: sevColor }}>%{liqPct.toFixed(1)} → paran biter</span>
+        </div>
+        {e > 0 && (<>
+          <div style={RS.resRow}><span style={RS.resKey}>Long likidasyon fiyatı</span><span style={{ ...RS.resVal, color: "#ff4d6d" }}>{fmtPrice(liqLong)}</span></div>
+          <div style={RS.resRow}><span style={RS.resKey}>Short likidasyon fiyatı</span><span style={{ ...RS.resVal, color: "#ff4d6d" }}>{fmtPrice(liqShort)}</span></div>
+        </>)}
+        <div style={RS.resRow}>
+          <span style={RS.resKey}>%5 ters giderse kaybın</span>
+          <span style={{ ...RS.resVal, color: sevColor }}>${lossOn5.toFixed(2)} (teminatın %{lossPctOnMargin5})</span>
+        </div>
+      </div>
+
+      <div style={{ ...RS.hint, color: sevColor }}>
+        {lev >= 25
+          ? `⚠ ${lev}x çok tehlikeli: fiyat sadece %${liqPct.toFixed(1)} ters giderse tüm paran sıfırlanır. Kripto bunu bir günde rahat yapar.`
+          : lev >= 10
+          ? `Dikkat: ${lev}x'te fiyat %${liqPct.toFixed(1)} ters giderse paran biter. Kripto günde %5–10 oynayabilir.`
+          : `${lev}x'te fiyat %${liqPct.toFixed(1)} ters giderse likide olursun.`}
+      </div>
+      <div style={RS.hint}>
+        Bu bir öğrenme/gösterim aracıdır, işlem önerisi değildir. Likidasyon yüzdesi yaklaşıktır
+        (borsa ücretleri ve teminat türüne göre biraz değişir). Kaldıraçlı işlem, yeni başlayanların
+        en hızlı para kaybettiği yoldur; çoğu kişi uzun vadede kaybeder.
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [watch, setWatch] = useState(() => {
     try { const s = JSON.parse(localStorage.getItem(STORAGE_KEY)); if (Array.isArray(s) && s.length) return s; } catch (e) {}
@@ -611,6 +685,8 @@ export default function App() {
         </div>
 
         <RiskCalc />
+
+        <LeverageSim />
 
         <div style={S.disclaimer}>
           Bu araç teknik göstergeleri (RSI, EMA, MACD, Bollinger) birleştirir; güven skoru, zaman
