@@ -254,6 +254,27 @@ function beep(tone) {
 }
 
 // Basit düz çizgi fiyat grafiği
+// Coin amblemi: gerçek logoyu dener, bulamazsa harf dairesine düşer
+const LOGO_TINT = ["#5b8def","#00e08a","#f0b90b","#e6486a","#a06bff","#f7a600","#1972f5","#ff8a3d"];
+function CoinLogo({ base, size = 34 }) {
+  const [failed, setFailed] = useState(false);
+  const tint = LOGO_TINT[(base.charCodeAt(0) + (base.charCodeAt(1) || 0)) % LOGO_TINT.length];
+  if (failed) {
+    return (
+      <span style={{ width: size, height: size, borderRadius: "50%", background: tint + "22",
+        border: `1px solid ${tint}`, color: tint, display: "inline-flex", alignItems: "center",
+        justifyContent: "center", fontSize: size * 0.42, fontWeight: 800, flexShrink: 0 }}>
+        {base.slice(0, 1)}
+      </span>
+    );
+  }
+  return (
+    <img src={`https://assets.coincap.io/assets/icons/${base.toLowerCase()}@2x.png`}
+      alt={base} width={size} height={size} onError={() => setFailed(true)}
+      style={{ borderRadius: "50%", flexShrink: 0, background: "#1a1e27" }} />
+  );
+}
+
 function Sparkline({ closes, up }) {
   if (!closes || closes.length < 2) return null;
   const pts = closes.slice(-50);
@@ -439,7 +460,10 @@ export default function App() {
             return (
               <div key={base} className="strip" onClick={() => setSelected(base)}
                 style={{ ...S.strip, borderColor: selected === base ? "#5b8def" : "#1a1e27" }}>
-                <div style={{ fontSize: 12, color: "#9098a6", fontWeight: 700 }}>{base}/USDT</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+                  <CoinLogo base={base} size={18} />
+                  <span style={{ fontSize: 12, color: "#9098a6", fontWeight: 700 }}>{base}/USDT</span>
+                </div>
                 <div style={{ fontSize: 16, fontWeight: 700, margin: "3px 0" }}>{d?.error ? "—" : fmtPrice(d?.price)}</div>
                 <div style={{ fontSize: 12, fontWeight: 700, color: !d || d.error ? "#5a606e" : up ? "#00e08a" : "#ff4d6d" }}>
                   {d && !d.error ? `${up ? "+" : ""}${d.change.toFixed(2)}%` : ""}
@@ -453,9 +477,12 @@ export default function App() {
         {sel && !sel.error && sel.sig && (
           <div style={S.card}>
             <div style={S.selHead}>
-              <div>
-                <span style={{ fontSize: 20, fontWeight: 700 }}>{selected}/USDT</span>
-                {sel.ex && <span style={{ ...S.exTag, color: EX_COLOR[sel.ex] || "#9098a6", borderColor: EX_COLOR[sel.ex] || "#23262f" }}>{sel.ex}</span>}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <CoinLogo base={selected} size={34} />
+                <div>
+                  <span style={{ fontSize: 20, fontWeight: 700 }}>{selected}/USDT</span>
+                  {sel.ex && <span style={{ ...S.exTag, color: EX_COLOR[sel.ex] || "#9098a6", borderColor: EX_COLOR[sel.ex] || "#23262f" }}>{sel.ex}</span>}
+                </div>
               </div>
               <div style={{ textAlign: "right" }}>
                 <div style={{ fontSize: 20, fontWeight: 700, color: sel.change >= 0 ? "#00e08a" : "#ff4d6d" }}>{fmtPrice(sel.price)}</div>
@@ -554,7 +581,9 @@ export default function App() {
           {watch.length > 0 && displayList.length === 0 && <div style={S.muted}>Bu filtreye uyan coin yok.</div>}
           {displayList.map(({ base, d }) => (
             <div key={base} className="row" style={S.lrow} onClick={() => setSelected(base)}>
-              <div style={{ flex: "0 0 64px", fontWeight: 700, color: selected === base ? "#5b8def" : "#e7eaf0" }}>{base}</div>
+              <div style={{ flex: "0 0 84px", fontWeight: 700, color: selected === base ? "#5b8def" : "#e7eaf0", display: "flex", alignItems: "center", gap: 7 }}>
+                <CoinLogo base={base} size={20} />{base}
+              </div>
               <div style={{ flex: 1, color: "#c9cfd9" }}>{d?.error ? "—" : fmtPrice(d?.price)}</div>
               <div style={{ flex: "0 0 60px", textAlign: "right", color: !d || d.error ? "#5a606e" : d.change >= 0 ? "#00e08a" : "#ff4d6d" }}>
                 {d && !d.error ? `${d.change >= 0 ? "+" : ""}${d.change.toFixed(2)}%` : ""}
