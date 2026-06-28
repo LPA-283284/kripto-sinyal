@@ -371,11 +371,12 @@ const fmtBig = (n) => {
   return `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
 };
 
-function MarketOverview() {
+function MarketOverview({ onAddCoin, watch, setTab }) {
   const [fg, setFg] = useState(null);
   const [glob, setGlob] = useState(null);
   const [trend, setTrend] = useState(null);
   const [err, setErr] = useState(false);
+  const [addMsg, setAddMsg] = useState("");
 
   useEffect(() => {
     let alive = true;
@@ -436,14 +437,29 @@ function MarketOverview() {
 
         {/* Trend coinler */}
         <div style={{ ...S.moCell, flex: "1 1 100%" }}>
-          <div style={S.moKey}>🔥 Trend Coinler</div>
+          <div style={S.moKey}>🔥 Trend Coinler <span style={{ color: "#5a606e", fontWeight: 400 }}>(eklemek için dokun)</span></div>
           {trend ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
-              {trend.map((t) => (
-                <span key={t} style={S.trendChip}>{t}</span>
-              ))}
+              {trend.map((t) => {
+                const already = watch && watch.includes(t);
+                return (
+                  <button key={t} className="chip"
+                    onClick={async () => {
+                      if (already) { setAddMsg(`${t} zaten listende`); return; }
+                      setAddMsg(`${t} ekleniyor…`);
+                      const r = await onAddCoin(t);
+                      setAddMsg(r.msg);
+                      if (r.ok && setTab) setTab("izleme");
+                    }}
+                    style={{ ...S.trendChip, cursor: "pointer", opacity: already ? 0.5 : 1,
+                      display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    {already ? "✓" : "+"} {t}
+                  </button>
+                );
+              })}
             </div>
           ) : <div style={S.moLoad}>…</div>}
+          {addMsg && <div style={{ ...S.muted, marginTop: 8, fontSize: 11 }}>{addMsg}</div>}
         </div>
       </div>
       {err && <div style={{ ...S.muted, marginTop: 8 }}>Bazı piyasa verileri şu an alınamadı (kaynak geçici sınır koymuş olabilir).</div>}
@@ -848,6 +864,21 @@ export default function App() {
     finally { setAdding(false); }
   };
 
+  // Trend coin gibi yerlerden doğrudan sembol ekleme; sonucu döndürür
+  const addSymbol = async (sym) => {
+    const base = (sym || "").trim().toUpperCase();
+    if (!base) return { ok: false, msg: "" };
+    if (watch.includes(base)) return { ok: false, msg: `${base} zaten listede` };
+    try {
+      const r = await resolveExchange(base, interval.v);
+      setWatch((w) => w.includes(base) ? w : [...w, base]);
+      setSelected(base);
+      return { ok: true, msg: `${base} eklendi (${r.ex})`, ex: r.ex };
+    } catch (e) {
+      return { ok: false, msg: `${base} borsalarda bulunamadı` };
+    }
+  };
+
   const buildDisplayList = () => {
     let list = watch.map((base) => ({ base, d: rows[base] }));
     if (filterMode === "buy") list = list.filter((x) => x.d?.sig?.verdict === "AL");
@@ -958,7 +989,7 @@ export default function App() {
           {/* ===== PİYASA SEKMESİ ===== */}
           {tab === "piyasa" && (<>
         {/* Piyasa genel görünümü */}
-        <MarketOverview />
+        <MarketOverview onAddCoin={addSymbol} watch={watch} setTab={setTab} />
 
         {/* Üst coin şeritleri */}
         <div className="strip-scroll" style={{ marginBottom: 16 }}>
