@@ -883,6 +883,10 @@ export default function App() {
         @media(min-width:1100px){.detail-grid{grid-template-columns:1fr 1fr 1fr;}}
 
         /* Sekmeli responsive yerleşim */
+        .shell{max-width:760px;}
+        @media(min-width:900px){
+          .shell{max-width:1140px;}
+        }
         .layout{display:flex;flex-direction:column;gap:0;}
         .sidenav{display:none;}
         .bottomnav{
@@ -920,7 +924,7 @@ export default function App() {
         }
       `}</style>
 
-      <div style={S.shell}>
+      <div className="shell" style={S.shell}>
         <header style={S.header}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ fontSize: 22 }}>📈</span>
@@ -1155,10 +1159,10 @@ export default function App() {
 const S = {
   page: { minHeight: "100vh", width: "100%", background: "radial-gradient(circle at 50% 0%, #11151d 0%, #080a0e 55%)",
     color: "#e7eaf0", fontFamily: "'SF Mono','Menlo','Consolas',monospace", padding: "20px 16px", boxSizing: "border-box" },
-  shell: { maxWidth: 760, margin: "0 auto", width: "100%" },
+  shell: { margin: "0 auto", width: "100%" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
   kicker: { fontSize: 9, letterSpacing: 2, color: "#5b8def", marginBottom: 2 },
-  title: { fontSize: 20, fontWeight: 700, margin: 0, letterSpacing: -0.5 },
+  title: { fontSize: 20, fontWeight: 700, margin: 0, letterSpacing: -0.5, color: "#e7eaf0" },
   liveBox: { display: "flex", alignItems: "center", gap: 8 },
   chipSm: { background: "#11151d", border: "1px solid #23262f", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600 },
   strip: { minWidth: 130, background: "linear-gradient(180deg,#11151d,#0c0f15)", border: "1px solid #1a1e27",
