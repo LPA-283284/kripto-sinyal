@@ -1,4 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { initializeApp } from "firebase/app";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
+
+// Firebase yapılandırması (kripto-sinyal projesi)
+const firebaseConfig = {
+  apiKey: "AIzaSyB1ZubPyFBrBtRVDWjwQpUE8V1kjGFjnT4",
+  authDomain: "kripto-sinyal-8a786.firebaseapp.com",
+  projectId: "kripto-sinyal-8a786",
+  storageBucket: "kripto-sinyal-8a786.firebasestorage.app",
+  messagingSenderId: "946567790089",
+  appId: "1:946567790089:web:01fcc5fca8fabf4c6fc2d8",
+};
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+// Tek ortak liste belgesi — tüm cihazlar buraya bakar
+const WATCH_DOC = doc(db, "kripto", "watchlist");
 
 const INTERVALS = [
   { v: "15m", label: "15dk" }, { v: "1h", label: "1sa" },
@@ -427,8 +443,39 @@ export default function App() {
   const [filterMode, setFilterMode] = useState("all");
   const prevVerdicts = useRef({});
   const timerRef = useRef(null);
+  const fbReady = useRef(false);       // ilk Firebase verisi geldi mi
+  const skipNextWrite = useRef(false); // Firebase'den gelen değişikliği geri yazma
 
-  useEffect(() => { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(watch)); } catch (e) {} }, [watch]);
+  // Firebase'i dinle: başka cihazda değişince burada da güncellensin
+  useEffect(() => {
+    const unsub = onSnapshot(WATCH_DOC, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (Array.isArray(data.coins)) {
+          skipNextWrite.current = true; // bu güncellemeyi tekrar Firebase'e yazma
+          setWatch(data.coins);
+          try { localStorage.setItem(STORAGE_KEY, JSON.stringify(data.coins)); } catch (e) {}
+        }
+      } else {
+        // belge yoksa, mevcut listeyle ilk kez oluştur
+        setDoc(WATCH_DOC, { coins: watch }).catch(() => {});
+      }
+      fbReady.current = true;
+    }, (err) => {
+      // Firebase'e ulaşılamazsa (offline vb.) sessizce yerel listeyle devam
+      fbReady.current = true;
+    });
+    return () => unsub();
+    // eslint-disable-next-line
+  }, []);
+
+  // Liste değişince: yerel kaydet + Firebase'e yaz
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(watch)); } catch (e) {}
+    if (!fbReady.current) return;           // henüz Firebase hazır değilse bekle
+    if (skipNextWrite.current) { skipNextWrite.current = false; return; } // Firebase'den geldiyse geri yazma
+    setDoc(WATCH_DOC, { coins: watch }).catch(() => {});
+  }, [watch]);
 
   const loadAll = useCallback(async () => {
     const results = {};
