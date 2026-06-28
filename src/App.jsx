@@ -22,6 +22,24 @@ const INTERVALS = [
 ];
 const MTF = ["1h", "4h", "1d"];
 const STORAGE_KEY = "kripto_watch_v2";
+const TG_TOKEN_KEY = "kripto_tg_token";
+const TG_CHAT_KEY = "kripto_tg_chat";
+
+// Telegram'a mesaj gönder (token cihazda saklanır, koda gömülmez)
+async function sendTelegram(text) {
+  const token = localStorage.getItem(TG_TOKEN_KEY);
+  const chat = localStorage.getItem(TG_CHAT_KEY);
+  if (!token || !chat) return false;
+  try {
+    const url = `https://api.telegram.org/bot${token}/sendMessage`;
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chat, text }),
+    });
+    return r.ok;
+  } catch (e) { return false; }
+}
 
 // ── Borsa adaptörleri (OHLC döndürür) ──────────────────────
 const BINANCE_IV = { "15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d" };
@@ -311,6 +329,307 @@ function Sparkline({ closes, up }) {
   );
 }
 
+// ── Piyasa Genel Görünümü ──────────────────────────────────
+async function fetchFearGreed() {
+  const r = await fetch("https://api.alternative.me/fng/?limit=1");
+  if (!r.ok) throw new Error("x");
+  const j = await r.json();
+  const d = j.data[0];
+  return { value: parseInt(d.value), label: d.value_classification };
+}
+async function fetchGlobal() {
+  const r = await fetch("https://api.coingecko.com/api/v3/global");
+  if (!r.ok) throw new Error("x");
+  const j = await r.json();
+  const d = j.data;
+  return {
+    btcDom: d.market_cap_percentage.btc,
+    ethDom: d.market_cap_percentage.eth,
+    totalMcap: d.total_market_cap.usd,
+    mcapChange: d.market_cap_change_percentage_24h_usd,
+  };
+}
+async function fetchTrending() {
+  const r = await fetch("https://api.coingecko.com/api/v3/search/trending");
+  if (!r.ok) throw new Error("x");
+  const j = await r.json();
+  return j.coins.slice(0, 7).map((c) => c.item.symbol.toUpperCase());
+}
+
+const FG_COLOR = (v) => v <= 25 ? "#ff4d6d" : v <= 45 ? "#f0a030" : v <= 55 ? "#f0c040" : v <= 75 ? "#9ed85b" : "#00e08a";
+const FG_TR = { "Extreme Fear": "Aşırı Korku", "Fear": "Korku", "Neutral": "Nötr", "Greed": "Açgözlülük", "Extreme Greed": "Aşırı Açgözlülük" };
+const fmtBig = (n) => {
+  if (n == null) return "—";
+  if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(1)}B`;
+  return `$${n.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+};
+
+function MarketOverview() {
+  const [fg, setFg] = useState(null);
+  const [glob, setGlob] = useState(null);
+  const [trend, setTrend] = useState(null);
+  const [err, setErr] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const [f, g, t] = await Promise.allSettled([fetchFearGreed(), fetchGlobal(), fetchTrending()]);
+        if (!alive) return;
+        if (f.status === "fulfilled") setFg(f.value);
+        if (g.status === "fulfilled") setGlob(g.value);
+        if (t.status === "fulfilled") setTrend(t.value);
+        if (f.status !== "fulfilled" && g.status !== "fulfilled") setErr(true);
+      } catch (e) { if (alive) setErr(true); }
+    };
+    load();
+    const id = setInterval(load, 5 * 60 * 1000); // 5 dakikada bir
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardHead}>PİYASA GENEL GÖRÜNÜMÜ</div>
+      <div style={S.moGrid}>
+        {/* Fear & Greed */}
+        <div style={S.moCell}>
+          <div style={S.moKey}>Korku / Açgözlülük</div>
+          {fg ? (
+            <>
+              <div style={{ fontSize: 26, fontWeight: 800, color: FG_COLOR(fg.value) }}>{fg.value}</div>
+              <div style={{ fontSize: 11, color: FG_COLOR(fg.value), fontWeight: 700 }}>{FG_TR[fg.label] || fg.label}</div>
+              <div style={S.moBarTrack}><div style={{ ...S.moBarFill, width: `${fg.value}%`, background: FG_COLOR(fg.value) }} /></div>
+            </>
+          ) : <div style={S.moLoad}>…</div>}
+        </div>
+
+        {/* BTC Dominance */}
+        <div style={S.moCell}>
+          <div style={S.moKey}>BTC Hakimiyeti</div>
+          {glob ? (
+            <>
+              <div style={{ fontSize: 26, fontWeight: 800, color: "#f0b90b" }}>{glob.btcDom.toFixed(1)}%</div>
+              <div style={{ fontSize: 11, color: "#7a8190" }}>ETH: {glob.ethDom.toFixed(1)}%</div>
+            </>
+          ) : <div style={S.moLoad}>…</div>}
+        </div>
+
+        {/* Toplam piyasa değeri */}
+        <div style={S.moCell}>
+          <div style={S.moKey}>Toplam Piyasa Değeri</div>
+          {glob ? (
+            <>
+              <div style={{ fontSize: 22, fontWeight: 800 }}>{fmtBig(glob.totalMcap)}</div>
+              <div style={{ fontSize: 11, fontWeight: 700, color: glob.mcapChange >= 0 ? "#00e08a" : "#ff4d6d" }}>
+                {glob.mcapChange >= 0 ? "+" : ""}{glob.mcapChange.toFixed(2)}% (24s)
+              </div>
+            </>
+          ) : <div style={S.moLoad}>…</div>}
+        </div>
+
+        {/* Trend coinler */}
+        <div style={{ ...S.moCell, flex: "1 1 100%" }}>
+          <div style={S.moKey}>🔥 Trend Coinler</div>
+          {trend ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
+              {trend.map((t) => (
+                <span key={t} style={S.trendChip}>{t}</span>
+              ))}
+            </div>
+          ) : <div style={S.moLoad}>…</div>}
+        </div>
+      </div>
+      {err && <div style={{ ...S.muted, marginTop: 8 }}>Bazı piyasa verileri şu an alınamadı (kaynak geçici sınır koymuş olabilir).</div>}
+      <div style={{ ...S.muted, marginTop: 8, fontSize: 10.5 }}>
+        Veriler: alternative.me (Korku/Açgözlülük) ve CoinGecko (hakimiyet, piyasa değeri, trend). 5 dk'da bir güncellenir.
+        Korku/Açgözlülük bir duygu göstergesidir, fiyat tahmini değildir.
+      </div>
+    </div>
+  );
+}
+
+// ── Coin Risk Tarayıcısı ───────────────────────────────────
+async function fetchCoinRisk(sym) {
+  // önce sembolden coingecko id bul
+  const lr = await fetch("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&symbols=" + sym.toLowerCase());
+  if (!lr.ok) throw new Error("x");
+  const arr = await lr.json();
+  if (!Array.isArray(arr) || arr.length === 0) throw new Error("yok");
+  // aynı sembolde birden çok olabilir; en yüksek piyasa değerlisini al
+  arr.sort((a, b) => (b.market_cap || 0) - (a.market_cap || 0));
+  return arr[0];
+}
+
+function analyzeRisk(d) {
+  const flags = [];
+  const mcap = d.market_cap || 0;
+  const vol = d.total_volume || 0;
+  const fdv = d.fully_diluted_valuation || 0;
+  const rank = d.market_cap_rank || 9999;
+  const athChange = d.ath_change_percentage || 0;
+  const volToMcap = mcap ? vol / mcap : 0;
+  const fdvToMcap = mcap ? fdv / mcap : 0;
+
+  // Piyasa değeri büyüklüğü
+  if (mcap < 10e6) flags.push({ t: "yüksek", m: "Çok küçük piyasa değeri (<$10M) — manipülasyona çok açık" });
+  else if (mcap < 100e6) flags.push({ t: "orta", m: "Küçük piyasa değeri (<$100M) — yüksek oynaklık beklenir" });
+  else if (mcap < 1e9) flags.push({ t: "düşük", m: "Orta piyasa değeri ($100M–$1B) — büyüme potansiyeli + risk dengeli" });
+  else flags.push({ t: "iyi", m: "Büyük piyasa değeri (>$1B) — görece daha oturmuş" });
+
+  // Hacim/piyasa değeri oranı (likidite sağlığı)
+  if (volToMcap < 0.01) flags.push({ t: "yüksek", m: "Çok düşük işlem hacmi — likidite zayıf, alım-satım zor olabilir" });
+  else if (volToMcap > 1) flags.push({ t: "orta", m: "Hacim piyasa değerinden büyük — anormal hareket/pump olabilir" });
+  else flags.push({ t: "iyi", m: "Hacim/piyasa değeri oranı sağlıklı görünüyor" });
+
+  // FDV baskısı (gelecekteki arz)
+  if (fdvToMcap > 3) flags.push({ t: "yüksek", m: `Yüksek FDV baskısı (${fdvToMcap.toFixed(1)}x) — gelecekte çok coin piyasaya çıkacak, fiyatı baskılayabilir` });
+  else if (fdvToMcap > 1.5) flags.push({ t: "orta", m: `Orta FDV baskısı (${fdvToMcap.toFixed(1)}x) — bir miktar arz açılışı bekleniyor` });
+  else if (fdv > 0) flags.push({ t: "iyi", m: "FDV baskısı düşük — arzın çoğu zaten dolaşımda" });
+
+  // ATH'den düşüş
+  if (athChange < -90) flags.push({ t: "orta", m: `Zirvesinden %${Math.abs(athChange).toFixed(0)} düşmüş — ya büyük fırsat ya da ölmekte olan proje` });
+  else if (athChange > -20) flags.push({ t: "orta", m: `Zirvesine yakın (%${Math.abs(athChange).toFixed(0)} altında) — tepeden almaya dikkat` });
+
+  // Sıralama
+  if (rank > 500) flags.push({ t: "orta", m: `Piyasa değeri sıralaması düşük (#${rank}) — az bilinen, daha riskli` });
+
+  return flags;
+}
+
+const RISK_COLOR = { "yüksek": "#ff4d6d", "orta": "#f0a030", "düşük": "#f0c040", "iyi": "#00e08a" };
+const RISK_ICON = { "yüksek": "⚠", "orta": "•", "düşük": "•", "iyi": "✓" };
+
+function TelegramSetup() {
+  const [token, setToken] = useState(() => localStorage.getItem(TG_TOKEN_KEY) || "");
+  const [chat, setChat] = useState(() => localStorage.getItem(TG_CHAT_KEY) || "");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const save = () => {
+    if (token.trim()) localStorage.setItem(TG_TOKEN_KEY, token.trim());
+    else localStorage.removeItem(TG_TOKEN_KEY);
+    if (chat.trim()) localStorage.setItem(TG_CHAT_KEY, chat.trim());
+    else localStorage.removeItem(TG_CHAT_KEY);
+    setMsg("Kaydedildi (bu cihazda).");
+  };
+
+  const test = async () => {
+    save();
+    setBusy(true); setMsg("Test mesajı gönderiliyor…");
+    const ok = await sendTelegram("✅ Kripto Sinyal Terminali bağlandı. Bildirimler buraya gelecek.");
+    setMsg(ok ? "Başarılı! Telegram'ı kontrol et." : "Gönderilemedi — token veya chat ID hatalı olabilir.");
+    setBusy(false);
+  };
+
+  const connected = !!localStorage.getItem(TG_TOKEN_KEY) && !!localStorage.getItem(TG_CHAT_KEY);
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardHead}>
+        TELEGRAM BİLDİRİMLERİ {connected && <span style={{ color: "#00e08a" }}>● bağlı</span>}
+      </div>
+      <div style={{ ...S.muted, marginBottom: 12 }}>
+        Bir coinin sinyali AL/SAT'a dönünce Telegram'dan haber alırsın. @BotFather'dan bot oluştur,
+        token ve chat ID'ni aşağıya gir. Bu bilgiler sadece bu cihazda saklanır, paylaşılmaz.
+      </div>
+      <div style={{ marginBottom: 10 }}>
+        <div style={RS.label}>Bot Token</div>
+        <input value={token} onChange={(e) => setToken(e.target.value)} placeholder="123456:AAF..." style={RS.input} />
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={RS.label}>Chat ID</div>
+        <input value={chat} onChange={(e) => setChat(e.target.value)} placeholder="123456789" inputMode="numeric" style={RS.input} />
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="chip" onClick={save} style={{ ...S.chipSm, borderColor: "#5b8def", color: "#5b8def" }}>Kaydet</button>
+        <button className="chip" onClick={test} disabled={busy} style={{ ...S.addBtn, opacity: busy ? 0.6 : 1 }}>
+          {busy ? "…" : "Test mesajı gönder"}
+        </button>
+      </div>
+      {msg && <div style={{ ...S.muted, marginTop: 10 }}>{msg}</div>}
+    </div>
+  );
+}
+
+function RiskScanner() {
+  const [q, setQ] = useState("");
+  const [data, setData] = useState(null);
+  const [flags, setFlags] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  const scan = async () => {
+    const sym = q.trim().toUpperCase();
+    if (!sym) return;
+    setLoading(true); setErr(""); setData(null); setFlags(null);
+    try {
+      const d = await fetchCoinRisk(sym);
+      setData(d);
+      setFlags(analyzeRisk(d));
+    } catch (e) {
+      setErr(`"${sym}" CoinGecko'da bulunamadı veya veri alınamadı.`);
+    } finally { setLoading(false); }
+  };
+
+  // genel risk seviyesi
+  let overall = null;
+  if (flags) {
+    const high = flags.filter((f) => f.t === "yüksek").length;
+    const mid = flags.filter((f) => f.t === "orta").length;
+    if (high >= 2) overall = { label: "YÜKSEK RİSK", color: "#ff4d6d" };
+    else if (high === 1 || mid >= 2) overall = { label: "ORTA-YÜKSEK RİSK", color: "#f0a030" };
+    else if (mid === 1) overall = { label: "ORTA RİSK", color: "#f0c040" };
+    else overall = { label: "GÖRECE DÜŞÜK RİSK", color: "#00e08a" };
+  }
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardHead}>COIN RİSK TARAYICISI</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && scan()}
+          placeholder="Coin sembolü (örn. RENDER, ARB, PEPE)…" style={{ ...S.input, marginBottom: 0, flex: 1 }} />
+        <button className="chip" onClick={scan} disabled={loading} style={{ ...S.addBtn, opacity: loading ? 0.6 : 1 }}>
+          {loading ? "…" : "Tara"}
+        </button>
+      </div>
+      {err && <div style={{ ...S.muted, marginTop: 8, color: "#ff4d6d" }}>{err}</div>}
+
+      {data && flags && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <span style={{ fontWeight: 700, fontSize: 15 }}>{data.symbol.toUpperCase()} — {data.name}</span>
+            {overall && <span style={{ ...S.badge, color: overall.color, borderColor: overall.color }}>{overall.label}</span>}
+          </div>
+
+          <div style={S.riskStats}>
+            <div style={S.riskStat}><span style={S.riskStatKey}>Piyasa değeri</span><span style={S.riskStatVal}>{fmtBig(data.market_cap)}</span></div>
+            <div style={S.riskStat}><span style={S.riskStatKey}>Sıralama</span><span style={S.riskStatVal}>#{data.market_cap_rank || "—"}</span></div>
+            <div style={S.riskStat}><span style={S.riskStatKey}>24s hacim</span><span style={S.riskStatVal}>{fmtBig(data.total_volume)}</span></div>
+            <div style={S.riskStat}><span style={S.riskStatKey}>Zirveden</span><span style={{ ...S.riskStatVal, color: "#ff4d6d" }}>{data.ath_change_percentage ? data.ath_change_percentage.toFixed(0) + "%" : "—"}</span></div>
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            {flags.map((f, i) => (
+              <div key={i} style={{ fontSize: 12.5, color: "#c9cfd9", padding: "5px 0", display: "flex", gap: 8 }}>
+                <span style={{ color: RISK_COLOR[f.t], fontWeight: 700, flexShrink: 0 }}>{RISK_ICON[f.t]}</span>
+                <span>{f.m}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div style={{ ...S.muted, marginTop: 12, fontSize: 10.5 }}>
+        Veri: CoinGecko. Bu bir risk *taraması*dır, fiyat tahmini veya tavsiye değildir. "Görece düşük risk"
+        bile zarar etmeyeceğin anlamına gelmez. Risk bayrakları tuzaklardan kaçınmana yardımcı olur, kazanç
+        garantisi vermez. Asıl karar ve araştırma sende.
+      </div>
+    </div>
+  );
+}
+
 function RiskCalc() {
   const [capital, setCapital] = useState("1000");
   const [riskPct, setRiskPct] = useState("2");
@@ -487,6 +806,9 @@ export default function App() {
         const prev = prevVerdicts.current[base];
         if (prev && prev !== d.sig.verdict && d.sig.verdict !== "BEKLE") {
           if (soundOn) beep(d.sig.tone);
+          // Telegram bildirimi (token/chat varsa)
+          const conf = Math.round(d.sig.strength * 100);
+          sendTelegram(`🔔 ${base}/USDT → ${d.sig.verdict}\nGüven: %${conf}\nFiyat: ${fmtPrice(d.price)}\nZaman uyumu: ${d.mtf ? d.mtf.align : "—"}\n\n(Bu bir bilgilendirmedir, yatırım tavsiyesi değildir.)`);
         }
         prevVerdicts.current[base] = d.sig.verdict;
       }
@@ -572,6 +894,9 @@ export default function App() {
             <span className="live-dot" />
           </div>
         </header>
+
+        {/* Piyasa genel görünümü */}
+        <MarketOverview />
 
         {/* Üst coin şeritleri */}
         <div className="strip-scroll" style={{ marginBottom: 16 }}>
@@ -731,6 +1056,10 @@ export default function App() {
           {addMsg && <div style={{ ...S.muted, marginTop: 8 }}>{addMsg}</div>}
         </div>
 
+        <TelegramSetup />
+
+        <RiskScanner />
+
         <RiskCalc />
 
         <LeverageSim />
@@ -760,6 +1089,18 @@ const S = {
     borderRadius: 12, padding: "12px 14px", flexShrink: 0 },
   card: { background: "linear-gradient(180deg,#11151d,#0b0e13)", border: "1px solid #1a1e27", borderRadius: 16, padding: 16, marginBottom: 14 },
   cardHead: { fontSize: 10, letterSpacing: 1.5, color: "#7a8190", marginBottom: 10 },
+  moGrid: { display: "flex", flexWrap: "wrap", gap: 12 },
+  moCell: { flex: "1 1 140px", background: "#0a0d12", border: "1px solid #1a1e27", borderRadius: 10, padding: "12px 14px" },
+  moKey: { fontSize: 10.5, color: "#7a8190", marginBottom: 6, letterSpacing: 0.3 },
+  moBarTrack: { height: 5, background: "#1a1e27", borderRadius: 3, marginTop: 7, overflow: "hidden" },
+  moBarFill: { height: "100%", borderRadius: 3, transition: "width .4s ease" },
+  moLoad: { fontSize: 18, color: "#3a3f4b" },
+  trendChip: { fontSize: 11.5, fontWeight: 700, color: "#f0a030", background: "rgba(240,160,48,0.1)",
+    border: "1px solid rgba(240,160,48,0.3)", borderRadius: 6, padding: "3px 9px" },
+  riskStats: { display: "flex", flexWrap: "wrap", gap: 8 },
+  riskStat: { flex: "1 1 100px", background: "#0a0d12", border: "1px solid #1a1e27", borderRadius: 8, padding: "8px 11px" },
+  riskStatKey: { display: "block", fontSize: 10, color: "#7a8190", marginBottom: 3 },
+  riskStatVal: { fontSize: 14, fontWeight: 700 },
   selHead: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
   exTag: { fontSize: 9.5, fontWeight: 700, border: "1px solid", borderRadius: 5, padding: "1px 6px", marginLeft: 8, letterSpacing: 0.5 },
   chartLabel: { fontSize: 10, marginBottom: 4 },
