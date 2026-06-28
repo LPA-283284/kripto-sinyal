@@ -22,6 +22,12 @@ const INTERVALS = [
 ];
 const MTF = ["1h", "4h", "1d"];
 const STORAGE_KEY = "kripto_watch_v2";
+const TABS = [
+  { id: "piyasa", label: "Piyasa", icon: "📊" },
+  { id: "izleme", label: "İzleme", icon: "👁" },
+  { id: "araclar", label: "Araçlar", icon: "🛠" },
+  { id: "ayarlar", label: "Ayarlar", icon: "⚙" },
+];
 const TG_TOKEN_KEY = "kripto_tg_token";
 const TG_CHAT_KEY = "kripto_tg_chat";
 
@@ -760,6 +766,7 @@ export default function App() {
   const [addMsg, setAddMsg] = useState("");
   const [sortMode, setSortMode] = useState("default");
   const [filterMode, setFilterMode] = useState("all");
+  const [tab, setTab] = useState("piyasa");
   const prevVerdicts = useRef({});
   const timerRef = useRef(null);
   const fbReady = useRef(false);       // ilk Firebase verisi geldi mi
@@ -874,6 +881,43 @@ export default function App() {
         .detail-grid{display:grid;gap:12px;grid-template-columns:1fr;}
         @media(min-width:760px){.detail-grid{grid-template-columns:1fr 1fr;}}
         @media(min-width:1100px){.detail-grid{grid-template-columns:1fr 1fr 1fr;}}
+
+        /* Sekmeli responsive yerleşim */
+        .layout{display:flex;flex-direction:column;gap:0;}
+        .sidenav{display:none;}
+        .bottomnav{
+          position:fixed;left:0;right:0;bottom:0;z-index:50;
+          display:flex;justify-content:space-around;align-items:center;
+          background:rgba(12,15,21,0.96);border-top:1px solid #1a1e27;
+          padding:6px 4px;backdrop-filter:blur(10px);
+        }
+        .navbtn{
+          flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
+          background:none;border:none;cursor:pointer;font-family:inherit;
+          padding:6px 2px;color:#7a8190;font-size:10px;font-weight:600;
+        }
+        .navbtn .ico{font-size:18px;line-height:1;}
+        .content{padding-bottom:76px;} /* alt menü için boşluk */
+
+        @media(min-width:900px){
+          .layout{flex-direction:row;gap:20px;align-items:flex-start;}
+          .bottomnav{display:none;}
+          .content{padding-bottom:0;flex:1;min-width:0;}
+          .sidenav{
+            display:flex;flex-direction:column;gap:4px;
+            width:190px;flex-shrink:0;position:sticky;top:20px;
+            background:linear-gradient(180deg,#11151d,#0b0e13);
+            border:1px solid #1a1e27;border-radius:14px;padding:10px;
+          }
+          .sidebtn{
+            display:flex;align-items:center;gap:10px;cursor:pointer;
+            background:none;border:none;font-family:inherit;text-align:left;
+            padding:11px 12px;border-radius:9px;color:#9098a6;font-size:13.5px;font-weight:600;
+            transition:all .15s;
+          }
+          .sidebtn:hover{background:#161b24;}
+          .sidebtn .ico{font-size:16px;}
+        }
       `}</style>
 
       <div style={S.shell}>
@@ -895,6 +939,20 @@ export default function App() {
           </div>
         </header>
 
+        <div className="layout">
+          {/* Sol menü (geniş ekran) */}
+          <nav className="sidenav">
+            {TABS.map((t) => (
+              <button key={t.id} className="sidebtn" onClick={() => setTab(t.id)}
+                style={tab === t.id ? { background: "#161b24", color: "#5b8def" } : {}}>
+                <span className="ico">{t.icon}</span>{t.label}
+              </button>
+            ))}
+          </nav>
+
+          <div className="content">
+          {/* ===== PİYASA SEKMESİ ===== */}
+          {tab === "piyasa" && (<>
         {/* Piyasa genel görünümü */}
         <MarketOverview />
 
@@ -997,14 +1055,13 @@ export default function App() {
                   </div>
                 ))}
               </div>
-              <div style={S.signalNote}>
-                Bu değerler (stop/hedef) coinin oynaklığına göre hesaplanır; geleceğin garantisi
-                değildir. Sinyal yanılabilir, yatırım tavsiyesi değildir.
-              </div>
             </div>
           </div>
         )}
+          </>)}
 
+          {/* ===== İZLEME SEKMESİ ===== */}
+          {tab === "izleme" && (<>
         {/* İzleme listesi */}
         <div style={S.card}>
           <div style={S.cardHead}>İZLEME LİSTESİ ({watch.length})</div>
@@ -1055,14 +1112,20 @@ export default function App() {
           </div>
           {addMsg && <div style={{ ...S.muted, marginTop: 8 }}>{addMsg}</div>}
         </div>
+          </>)}
 
-        <TelegramSetup />
-
+          {/* ===== ARAÇLAR SEKMESİ ===== */}
+          {tab === "araclar" && (<>
         <RiskScanner />
 
         <RiskCalc />
 
         <LeverageSim />
+          </>)}
+
+          {/* ===== AYARLAR SEKMESİ ===== */}
+          {tab === "ayarlar" && (<>
+        <TelegramSetup />
 
         <div style={S.disclaimer}>
           Bu araç teknik göstergeleri (RSI, EMA, MACD, Bollinger) birleştirir; güven skoru, zaman
@@ -1071,6 +1134,19 @@ export default function App() {
           bu bir yatırım tavsiyesi değildir. Küçük/düşük hacimli coinlerde göstergeler güvenilmezdir.
           Kararı ve işlemi sen kendi hesabında verirsin; risk yönetimi belirleyicidir.
         </div>
+          </>)}
+          </div>{/* content */}
+        </div>{/* layout */}
+
+        {/* Alt menü (telefon) */}
+        <nav className="bottomnav">
+          {TABS.map((t) => (
+            <button key={t.id} className="navbtn" onClick={() => setTab(t.id)}
+              style={tab === t.id ? { color: "#5b8def" } : {}}>
+              <span className="ico">{t.icon}</span>{t.label}
+            </button>
+          ))}
+        </nav>
       </div>
     </div>
   );
