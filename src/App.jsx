@@ -25,6 +25,7 @@ const STORAGE_KEY = "kripto_watch_v2";
 const TABS = [
   { id: "piyasa", label: "Piyasa", icon: "📊" },
   { id: "izleme", label: "İzleme", icon: "👁" },
+  { id: "haberler", label: "Haberler", icon: "📰" },
   { id: "araclar", label: "Araçlar", icon: "🛠" },
   { id: "ayarlar", label: "Ayarlar", icon: "⚙" },
 ];
@@ -249,6 +250,139 @@ function buildSignal(c) {
   return { rsi, verdict, tone, reasons, score, confidence, strength, price, stop, tp1, tp2, rr, dir: Math.sign(score) };
 }
 
+// ── Binance Futures TÜREV verileri (public, key gerektirmez, hepsi fail-safe) ──
+// Not: Bu uçlar yalnızca Binance vadeli (perpetual) sözleşmesi olan coinler için çalışır.
+// Veri yoksa veya hata olursa null döner; spot sistem bundan ETKİLENMEZ.
+const FAPI = "https://fapi.binance.com";
+
+async function fetchFundingRate(base) {
+  try {
+    const r = await fetch(`${FAPI}/fapi/v1/premiumIndex?symbol=${base}USDT`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || j.lastFundingRate == null) return null;
+    return { rate: parseFloat(j.lastFundingRate), markPrice: parseFloat(j.markPrice) };
+  } catch (e) { return null; }
+}
+
+async function fetchOpenInterest(base) {
+  try {
+    const r = await fetch(`${FAPI}/fapi/v1/openInterest?symbol=${base}USDT`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || j.openInterest == null) return null;
+    return parseFloat(j.openInterest);
+  } catch (e) { return null; }
+}
+
+async function fetchOpenInterestHistory(base) {
+  // OI değişim yüzdesi için son birkaç 1s'lik kaydı çeker (en güvenli yöntem)
+  try {
+    const r = await fetch(`${FAPI}/futures/data/openInterestHist?symbol=${base}USDT&period=1h&limit=6`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j) || j.length < 2) return null;
+    const first = parseFloat(j[0].sumOpenInterest);
+    const last = parseFloat(j[j.length - 1].sumOpenInterest);
+    if (!first) return null;
+    return { changePct: ((last - first) / first) * 100, latest: last };
+  } catch (e) { return null; }
+}
+
+async function fetchLongShortRatio(base) {
+  try {
+    const r = await fetch(`${FAPI}/futures/data/globalLongShortAccountRatio?symbol=${base}USDT&period=1h&limit=1`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j) || j.length === 0) return null;
+    return parseFloat(j[0].longShortRatio);
+  } catch (e) { return null; }
+}
+
+async function fetchOrderBookImbalance(base) {
+  try {
+    const r = await fetch(`${FAPI}/fapi/v1/depth?symbol=${base}USDT&limit=50`);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!j || !Array.isArray(j.bids) || !Array.isArray(j.asks)) return null;
+    const bidVol = j.bids.reduce((s, [p, q]) => s + parseFloat(q), 0);
+    const askVol = j.asks.reduce((s, [p, q]) => s + parseFloat(q), 0);
+    const total = bidVol + askVol;
+    if (!total) return null;
+    return { bidVol, askVol, bidPct: (bidVol / total) * 100 };
+  } catch (e) { return null; }
+}
+
+// Tüm türev verisini topla; hiçbiri yoksa null döndür (spot etkilenmez)
+async function fetchDerivatives(base) {
+  const [funding, oi, oiHist, lsr, ob] = await Promise.all([
+    fetchFundingRate(base),
+    fetchOpenInterest(base),
+    fetchOpenInterestHistory(base),
+    fetchLongShortRatio(base),
+    fetchOrderBookImbalance(base),
+  ]);
+  // Hiçbir veri gelmediyse türev yok say
+  if (funding == null && oi == null && oiHist == null && lsr == null && ob == null) return null;
+  return { funding, oi, oiHist, lsr, ob };
+}
+
+// Türev verisini yorumla — yalnızca yardımcı etki; tek başına AL/SAT üretmez
+function analyzeDerivatives(data) {
+  if (!data) return null;
+  const reasons = [];
+  let score = 0;
+
+  // Funding Rate: çok pozitif = longlar aşırı ısınmış (geri çekilme riski), negatif = shortlar baskın
+  let fundingBias = "nötr";
+  if (data.funding && data.funding.rate != null) {
+    const fr = data.funding.rate * 100; // yüzde
+    if (fr > 0.05) { fundingBias = "aşırı pozitif"; score -= 1; reasons.push(`Funding yüksek (%${fr.toFixed(3)}) — longlar ısınmış, geri çekilme riski`); }
+    else if (fr > 0.01) { fundingBias = "pozitif"; reasons.push(`Funding pozitif (%${fr.toFixed(3)}) — long eğilimi`); }
+    else if (fr < -0.05) { fundingBias = "aşırı negatif"; score += 1; reasons.push(`Funding çok negatif (%${fr.toFixed(3)}) — shortlar ısınmış, sıkışma olabilir`); }
+    else if (fr < -0.01) { fundingBias = "negatif"; reasons.push(`Funding negatif (%${fr.toFixed(3)}) — short eğilimi`); }
+    else { reasons.push(`Funding nötr (%${fr.toFixed(3)})`); }
+  }
+
+  // Open Interest değişimi: artıyorsa piyasa ilgisi artıyor (yön nötr ama oynaklık ↑)
+  let oiBias = "nötr";
+  if (data.oiHist && data.oiHist.changePct != null) {
+    const c = data.oiHist.changePct;
+    if (c > 5) { oiBias = "artıyor"; reasons.push(`Açık pozisyon (OI) artıyor (+%${c.toFixed(1)}) — ilgi ve oynaklık yükseliyor`); }
+    else if (c < -5) { oiBias = "azalıyor"; reasons.push(`Açık pozisyon (OI) azalıyor (%${c.toFixed(1)}) — pozisyonlar kapanıyor`); }
+    else { reasons.push(`Açık pozisyon (OI) yatay (%${c.toFixed(1)})`); }
+  }
+
+  // Long/Short oranı: aşırı uçlar ters sinyal olabilir (kalabalık genelde yanılır)
+  let longShortBias = "nötr";
+  if (data.lsr != null) {
+    if (data.lsr > 2) { longShortBias = "aşırı long"; score -= 1; reasons.push(`Long/Short ${data.lsr.toFixed(2)} — kalabalık aşırı long, dikkat`); }
+    else if (data.lsr > 1.2) { longShortBias = "long ağırlıklı"; reasons.push(`Long/Short ${data.lsr.toFixed(2)} — longlar baskın`); }
+    else if (data.lsr < 0.5) { longShortBias = "aşırı short"; score += 1; reasons.push(`Long/Short ${data.lsr.toFixed(2)} — kalabalık aşırı short`); }
+    else if (data.lsr < 0.83) { longShortBias = "short ağırlıklı"; reasons.push(`Long/Short ${data.lsr.toFixed(2)} — shortlar baskın`); }
+    else { reasons.push(`Long/Short dengeli (${data.lsr.toFixed(2)})`); }
+  }
+
+  // Order book bid/ask baskısı
+  let orderBookBias = "nötr";
+  if (data.ob && data.ob.bidPct != null) {
+    const b = data.ob.bidPct;
+    if (b > 60) { orderBookBias = "alış baskısı"; score += 1; reasons.push(`Emir defterinde alış baskısı (%${b.toFixed(0)} bid)`); }
+    else if (b < 40) { orderBookBias = "satış baskısı"; score -= 1; reasons.push(`Emir defterinde satış baskısı (%${(100-b).toFixed(0)} ask)`); }
+    else { reasons.push(`Emir defteri dengeli (%${b.toFixed(0)} bid)`); }
+  }
+
+  // Türev risk seviyesi (oynaklık/ısınma göstergesi)
+  let derivativeRisk = "düşük";
+  const fr = data.funding ? Math.abs(data.funding.rate * 100) : 0;
+  const oiUp = data.oiHist && data.oiHist.changePct > 10;
+  const lsExtreme = data.lsr != null && (data.lsr > 2 || data.lsr < 0.5);
+  if (fr > 0.1 || lsExtreme || oiUp) derivativeRisk = "yüksek";
+  else if (fr > 0.03 || (data.oiHist && Math.abs(data.oiHist.changePct) > 5)) derivativeRisk = "orta";
+
+  return { fundingBias, oiBias, longShortBias, orderBookBias, derivativeScore: score, derivativeRisk, reasons };
+}
+
 async function fetchCoin(base, interval) {
   const { ohlc, ex } = await resolveExchange(base, interval);
   const closes = ohlc.map((d) => d.close);
@@ -272,7 +406,26 @@ async function fetchCoin(base, interval) {
     else if (downs > ups) { align = "çoğunluk aşağı"; atone = "sell"; }
     mtf = { align, atone, agree: Math.max(ups, downs), total: MTF.length };
   } catch (e) {}
-  return { ohlc, closes, price, change: ((price - prev) / prev) * 100, sig, mtf, ex };
+
+  // ── Türev verisi (opsiyonel, fail-safe) — yoksa null, spot sistem etkilenmez ──
+  let derivative = null, derivAnalysis = null;
+  try {
+    derivative = await fetchDerivatives(base);
+    derivAnalysis = analyzeDerivatives(derivative);
+    // Türev skoru yalnızca güveni hafif güçlendirir/zayıflatır; yön DEĞİŞTİRMEZ
+    if (sig && derivAnalysis && derivAnalysis.derivativeScore !== 0) {
+      // sinyal yönü ile türev skoru aynı yöndeyse güven biraz artar, tersse biraz azalır
+      const sameDir = (sig.dir > 0 && derivAnalysis.derivativeScore > 0) || (sig.dir < 0 && derivAnalysis.derivativeScore < 0);
+      if (sig.dir !== 0) {
+        sig.strength = Math.max(0, Math.min(1, sig.strength + (sameDir ? 0.05 : -0.05) * Math.abs(derivAnalysis.derivativeScore)));
+        if (sig.strength >= 0.66) sig.confidence = "güçlü";
+        else if (sig.strength >= 0.33) sig.confidence = "orta";
+        else sig.confidence = "zayıf";
+      }
+    }
+  } catch (e) { derivative = null; derivAnalysis = null; }
+
+  return { ohlc, closes, price, change: ((price - prev) / prev) * 100, sig, mtf, ex, derivative, derivAnalysis };
 }
 
 const TONE = { buy: "#00e08a", sell: "#ff4d6d", hold: "#f0c040" };
@@ -472,6 +625,77 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
 }
 
 // ── Coin Risk Tarayıcısı ───────────────────────────────────
+// ── HABER sistemi ──────────────────────────────────────────
+// ÖNEMLİ: CryptoPanic, CoinDesk/CoinTelegraph RSS ve Binance duyuruları tarayıcıdan
+// DOĞRUDAN çekilemez (CORS engeli + bazıları API key ister). Bu yüzden frontend tek
+// başına haber verisi ALAMAZ. Sahte/mock haber ÜRETİLMEZ — veri yoksa boş durum gösterilir.
+// TODO (gelecek): Bir backend/proxy (ör. Cloudflare Worker / küçük sunucu) kurulup şu
+// kaynaklar oradan toplanmalı, sırayla: 1) CryptoPanic API 2) Binance Announcements
+// 3) CoinDesk RSS 4) CoinTelegraph RSS. Proxy URL'i NEWS_PROXY'ye yazılınca otomatik çalışır.
+const NEWS_PROXY = ""; // ör. "https://senin-proxyn.workers.dev/news" — boşken haber alınamaz
+
+const NEWS_NEG = ["hack","exploit","security breach","breach","lawsuit","sec ","investigation","bankruptcy","liquidation","delisting","delist","attack","stolen","scam","rug","halt","ban","fraud"];
+const NEWS_POS = ["etf approval","etf","approval","listing","partnership","integration","mainnet","upgrade","burn","adoption","institutional","staking","launch"];
+const NEWS_CAT = [
+  { k: ["hack","exploit","breach","stolen","attack"], c: "Hack" },
+  { k: ["etf"], c: "ETF" },
+  { k: ["partnership","integration"], c: "Partnership" },
+  { k: ["listing","listed"], c: "Listing" },
+  { k: ["delist","delisting"], c: "Delisting" },
+  { k: ["sec","regulation","lawsuit","investigation","ban"], c: "Regulation" },
+  { k: ["upgrade","mainnet","hard fork","update"], c: "Upgrade" },
+];
+
+function categorizeNews(title) {
+  const t = (title || "").toLowerCase();
+  for (const { k, c } of NEWS_CAT) if (k.some((w) => t.includes(w))) return c;
+  return "Genel";
+}
+
+// Keyword tabanlı haber risk analizi (AI gerektirmez)
+function analyzeNewsRisk(items, coin) {
+  if (!items || items.length === 0) return null;
+  let neg = 0, pos = 0;
+  const affected = new Set();
+  items.forEach((it) => {
+    const t = (it.title || "").toLowerCase();
+    if (NEWS_NEG.some((w) => t.includes(w))) neg++;
+    if (NEWS_POS.some((w) => t.includes(w))) pos++;
+    if (coin && t.includes(coin.toLowerCase())) affected.add(coin.toUpperCase());
+  });
+  const total = items.length;
+  // skor: 50 nötr; negatif haber düşürür, pozitif yükseltir
+  let score = 50 + (pos * 12) - (neg * 18);
+  score = Math.max(0, Math.min(100, score));
+  let sentiment = "neutral";
+  if (score >= 62) sentiment = "positive";
+  else if (score <= 38) sentiment = "negative";
+  let level = "düşük";
+  if (neg >= 2 || score <= 30) level = "yüksek";
+  else if (neg === 1 || score <= 45) level = "orta";
+  let reason;
+  if (neg >= 2) reason = "Birden çok olumsuz/riskli haber başlığı tespit edildi";
+  else if (neg === 1) reason = "Bir olumsuz haber başlığı var";
+  else if (pos >= 2) reason = "Ağırlıklı olumlu haber akışı";
+  else reason = "Belirgin bir risk işareti yok";
+  return { level, score, sentiment, affectedCoins: [...affected], reason };
+}
+
+// Haber çekme — proxy yoksa boş döner (sahte üretmez, fail-safe)
+async function fetchNews(coin) {
+  if (!NEWS_PROXY) return { items: [], unavailable: true };
+  try {
+    const url = `${NEWS_PROXY}?coin=${encodeURIComponent(coin || "")}`;
+    const r = await fetch(url);
+    if (!r.ok) return { items: [], unavailable: true };
+    const j = await r.json();
+    const items = Array.isArray(j.items) ? j.items : [];
+    return { items, unavailable: false };
+  } catch (e) {
+    return { items: [], unavailable: true };
+  }
+}
+
 async function fetchCoinRisk(sym) {
   // önce sembolden coingecko id bul
   const lr = await fetch("https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&symbols=" + sym.toLowerCase());
@@ -521,6 +745,113 @@ function analyzeRisk(d) {
 
 const RISK_COLOR = { "yüksek": "#ff4d6d", "orta": "#f0a030", "düşük": "#f0c040", "iyi": "#00e08a" };
 const RISK_ICON = { "yüksek": "⚠", "orta": "•", "düşük": "•", "iyi": "✓" };
+
+function NewsTab({ watch }) {
+  const [items, setItems] = useState([]);
+  const [unavailable, setUnavailable] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [open, setOpen] = useState({});
+  const [coinFilter, setCoinFilter] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [impactFilter, setImpactFilter] = useState("all");
+  const [timeFilter, setTimeFilter] = useState("7g");
+  const [q, setQ] = useState("");
+
+  const load = async () => {
+    setLoading(true);
+    const res = await fetchNews(coinFilter);
+    setItems(res.items || []);
+    setUnavailable(!!res.unavailable);
+    setLoading(false);
+  };
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  // filtreler
+  const now = Date.now();
+  const filtered = items.filter((it) => {
+    if (q && !(it.title || "").toLowerCase().includes(q.toLowerCase())) return false;
+    if (sourceFilter !== "all" && it.source !== sourceFilter) return false;
+    if (impactFilter !== "all" && it.impact !== impactFilter) return false;
+    if (timeFilter !== "all" && it.publishedAt) {
+      const age = now - new Date(it.publishedAt).getTime();
+      const limit = timeFilter === "24s" ? 86400e3 : 7 * 86400e3;
+      if (age > limit) return false;
+    }
+    return true;
+  }).sort((a, b) => new Date(b.publishedAt || 0) - new Date(a.publishedAt || 0));
+
+  const sources = ["all", ...Array.from(new Set(items.map((i) => i.source).filter(Boolean)))];
+
+  return (
+    <div style={S.card}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={S.cardHead}>HABERLER</div>
+        <button className="chip" onClick={load} disabled={loading}
+          style={{ ...S.chipSm, borderColor: "#5b8def", color: "#5b8def" }}>{loading ? "…" : "⟳ Yenile"}</button>
+      </div>
+
+      {/* Filtreler */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ara…"
+          style={{ ...S.input, marginBottom: 0, flex: "1 1 140px" }} />
+        <input value={coinFilter} onChange={(e) => setCoinFilter(e.target.value)} placeholder="Coin (örn. BTC)"
+          style={{ ...S.input, marginBottom: 0, flex: "1 1 110px" }} />
+      </div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+        {[["all","Tümü"],["24s","24 saat"],["7g","7 gün"]].map(([v,l]) => (
+          <button key={v} className="chip" onClick={() => setTimeFilter(v)}
+            style={{ ...S.filterChip, borderColor: timeFilter === v ? "#5b8def" : "#23262f", color: timeFilter === v ? "#5b8def" : "#9098a6" }}>{l}</button>
+        ))}
+        {[["all","Tüm etki"],["yüksek","Yüksek"],["orta","Orta"],["düşük","Düşük"]].map(([v,l]) => (
+          <button key={v} className="chip" onClick={() => setImpactFilter(v)}
+            style={{ ...S.filterChip, borderColor: impactFilter === v ? "#f0a030" : "#23262f", color: impactFilter === v ? "#f0a030" : "#9098a6" }}>{l}</button>
+        ))}
+      </div>
+
+      {/* İçerik */}
+      {unavailable && (
+        <div style={{ ...S.muted, textAlign: "center", padding: "24px 12px" }}>
+          Haber verisi şu anda alınamıyor.
+          <div style={{ fontSize: 10.5, marginTop: 8, color: "#5a606e" }}>
+            (Haber kaynakları tarayıcıdan doğrudan erişime kapalıdır; bu özellik bir proxy/backend
+            bağlandığında otomatik çalışacaktır. Sahte haber gösterilmez.)
+          </div>
+        </div>
+      )}
+      {!unavailable && filtered.length === 0 && !loading && (
+        <div style={{ ...S.muted, textAlign: "center", padding: "20px" }}>Bu filtreye uyan haber yok.</div>
+      )}
+
+      {!unavailable && filtered.map((it, i) => {
+        const impColor = it.impact === "yüksek" ? "#ff4d6d" : it.impact === "orta" ? "#f0a030" : "#00e08a";
+        return (
+          <div key={i} style={S.newsCard}>
+            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+              <div style={{ fontWeight: 700, fontSize: 13.5, color: "#e7eaf0" }}>{it.title}</div>
+              {it.impact && <span style={{ ...S.badge, color: impColor, borderColor: impColor, flexShrink: 0, height: "fit-content" }}>{it.impact}</span>}
+            </div>
+            <div style={{ fontSize: 11, color: "#7a8190", marginTop: 4, display: "flex", gap: 8, flexWrap: "wrap" }}>
+              {it.source && <span>{it.source}</span>}
+              {it.category && <span style={{ color: "#5b8def" }}>· {it.category}</span>}
+              {it.publishedAt && <span>· {new Date(it.publishedAt).toLocaleString("tr-TR")}</span>}
+            </div>
+            <button className="chip" onClick={() => setOpen((o) => ({ ...o, [i]: !o[i] }))}
+              style={{ ...S.chipSm, marginTop: 8, borderColor: "#23262f", color: "#9098a6", fontSize: 11 }}>
+              {open[i] ? "Detayı Kapat" : "Detayı Aç"}
+            </button>
+            {open[i] && (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 12.5, color: "#c9cfd9", lineHeight: 1.6 }}>{it.summary || "Özet bulunmuyor."}</div>
+                {it.url && <a href={it.url} target="_blank" rel="noopener noreferrer"
+                  style={{ fontSize: 11.5, color: "#5b8def", marginTop: 6, display: "inline-block" }}>Orijinal kaynağa git →</a>}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
 
 function TelegramSetup() {
   const [token, setToken] = useState(() => localStorage.getItem(TG_TOKEN_KEY) || "");
@@ -829,9 +1160,17 @@ export default function App() {
         const prev = prevVerdicts.current[base];
         if (prev && prev !== d.sig.verdict && d.sig.verdict !== "BEKLE") {
           if (soundOn) beep(d.sig.tone);
-          // Telegram bildirimi (token/chat varsa)
+          // Telegram bildirimi (token/chat varsa) — türev ve haber bilgisiyle genişletilmiş
           const conf = Math.round(d.sig.strength * 100);
-          sendTelegram(`🔔 ${base}/USDT → ${d.sig.verdict}\nGüven: %${conf}\nFiyat: ${fmtPrice(d.price)}\nZaman uyumu: ${d.mtf ? d.mtf.align : "—"}\n\n(Bu bir bilgilendirmedir, yatırım tavsiyesi değildir.)`);
+          let extra = "";
+          if (d.derivative && d.derivAnalysis) {
+            const fr = d.derivative.funding ? (d.derivative.funding.rate * 100).toFixed(3) + "%" : "—";
+            const oi = d.derivative.oiHist ? (d.derivative.oiHist.changePct >= 0 ? "+" : "") + d.derivative.oiHist.changePct.toFixed(1) + "%" : "—";
+            const ls = d.derivative.lsr != null ? d.derivative.lsr.toFixed(2) : "—";
+            extra += `\n— Türev —\nFunding: ${fr}\nOI değişimi: ${oi}\nLong/Short: ${ls}\nTürev risk: ${d.derivAnalysis.derivativeRisk}`;
+          }
+          if (d.newsRisk) extra += `\nHaber riski: ${d.newsRisk.level}`;
+          sendTelegram(`🔔 ${base}/USDT → ${d.sig.verdict}\nGüven: %${conf}\nFiyat: ${fmtPrice(d.price)}\nZaman uyumu: ${d.mtf ? d.mtf.align : "—"}${extra}\n\n(Bu bir bilgilendirmedir, yatırım tavsiyesi değildir.)`);
         }
         prevVerdicts.current[base] = d.sig.verdict;
       }
@@ -1090,7 +1429,48 @@ export default function App() {
                   </div>
                 ))}
               </div>
+              {/* Haber riski satırı (opsiyonel — veri yoksa gösterilmez) */}
+              {sel.newsRisk && (
+                <div style={{ marginTop: 10, fontSize: 12, color: "#9098a6" }}>
+                  Haber riski: <span style={{ fontWeight: 700, color: sel.newsRisk.level === "yüksek" ? "#ff4d6d" : sel.newsRisk.level === "orta" ? "#f0a030" : "#00e08a" }}>
+                    {sel.newsRisk.level.toUpperCase()}</span> <span style={{ color: "#5a606e" }}>· {sel.newsRisk.reason}</span>
+                </div>
+              )}
             </div>
+
+            {/* ===== TÜREV PİYASA ANALİZİ (opsiyonel — Binance vadeli verisi varsa) ===== */}
+            {sel.derivative && sel.derivAnalysis && (
+              <div style={{ ...S.signalBox, borderColor: "#23262f", marginTop: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#9098a6", letterSpacing: 0.5 }}>TÜREV PİYASA ANALİZİ</div>
+                  <span style={{ ...S.badge,
+                    color: sel.derivAnalysis.derivativeRisk === "yüksek" ? "#ff4d6d" : sel.derivAnalysis.derivativeRisk === "orta" ? "#f0a030" : "#00e08a",
+                    borderColor: sel.derivAnalysis.derivativeRisk === "yüksek" ? "#ff4d6d" : sel.derivAnalysis.derivativeRisk === "orta" ? "#f0a030" : "#00e08a" }}>
+                    Risk: {sel.derivAnalysis.derivativeRisk.toUpperCase()}
+                  </span>
+                </div>
+                <div style={S.tpGrid}>
+                  <div style={S.tpCell}><div style={S.tpKey}>Funding</div>
+                    <div style={S.tpVal}>{sel.derivative.funding ? (sel.derivative.funding.rate * 100).toFixed(3) + "%" : "—"}</div></div>
+                  <div style={S.tpCell}><div style={S.tpKey}>OI değişimi</div>
+                    <div style={{ ...S.tpVal, color: sel.derivative.oiHist ? (sel.derivative.oiHist.changePct >= 0 ? "#00e08a" : "#ff4d6d") : "#e7eaf0" }}>
+                      {sel.derivative.oiHist ? (sel.derivative.oiHist.changePct >= 0 ? "+" : "") + sel.derivative.oiHist.changePct.toFixed(1) + "%" : "—"}</div></div>
+                  <div style={S.tpCell}><div style={S.tpKey}>Long/Short</div>
+                    <div style={S.tpVal}>{sel.derivative.lsr != null ? sel.derivative.lsr.toFixed(2) : "—"}</div></div>
+                  <div style={S.tpCell}><div style={S.tpKey}>Bid baskısı</div>
+                    <div style={S.tpVal}>{sel.derivative.ob ? sel.derivative.ob.bidPct.toFixed(0) + "%" : "—"}</div></div>
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  {sel.derivAnalysis.reasons.map((r, i) => (
+                    <div key={i} style={{ fontSize: 11.5, color: "#9098a6", padding: "3px 0" }}>· {r}</div>
+                  ))}
+                </div>
+                <div style={{ ...S.signalNote, marginTop: 8 }}>
+                  Türev verileri (Binance vadeli piyasa) yardımcı bağlamdır; güveni hafif
+                  güçlendirir/zayıflatır ama tek başına AL/SAT üretmez. Yatırım tavsiyesi değildir.
+                </div>
+              </div>
+            )}
           </div>
         )}
           </>)}
@@ -1147,6 +1527,11 @@ export default function App() {
           </div>
           {addMsg && <div style={{ ...S.muted, marginTop: 8 }}>{addMsg}</div>}
         </div>
+          </>)}
+
+          {/* ===== HABERLER SEKMESİ ===== */}
+          {tab === "haberler" && (<>
+        <NewsTab watch={watch} />
           </>)}
 
           {/* ===== ARAÇLAR SEKMESİ ===== */}
@@ -1230,6 +1615,7 @@ const S = {
   reasonsGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 14px" },
   reasonItem: { fontSize: 12, color: "#c9cfd9" },
   signalNote: { fontSize: 10.5, color: "#5a606e", marginTop: 12, lineHeight: 1.5, fontFamily: "system-ui,sans-serif" },
+  newsCard: { background: "#0a0d12", border: "1px solid #1a1e27", borderRadius: 10, padding: "12px 14px", marginBottom: 10 },
   filterBar: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 8 },
   filterLabel: { fontSize: 11, color: "#5a606e", minWidth: 42 },
   filterChip: { background: "#11151d", border: "1px solid #23262f", borderRadius: 7, padding: "4px 11px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
