@@ -632,7 +632,7 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
 // TODO (gelecek): Bir backend/proxy (ör. Cloudflare Worker / küçük sunucu) kurulup şu
 // kaynaklar oradan toplanmalı, sırayla: 1) CryptoPanic API 2) Binance Announcements
 // 3) CoinDesk RSS 4) CoinTelegraph RSS. Proxy URL'i NEWS_PROXY'ye yazılınca otomatik çalışır.
-const NEWS_PROXY = ""; // ör. "https://senin-proxyn.workers.dev/news" — boşken haber alınamaz
+const NEWS_PROXY = "https://kripto-haber.gerekligereksiz.workers.dev/"; // Cloudflare Worker haber proxy
 
 const NEWS_NEG = ["hack","exploit","security breach","breach","lawsuit","sec ","investigation","bankruptcy","liquidation","delisting","delist","attack","stolen","scam","rug","halt","ban","fraud"];
 const NEWS_POS = ["etf approval","etf","approval","listing","partnership","integration","mainnet","upgrade","burn","adoption","institutional","staking","launch"];
@@ -1228,7 +1228,27 @@ export default function App() {
     return list;
   };
   const displayList = buildDisplayList();
-  const sel = rows[selected];
+  const baseSel = rows[selected];
+
+  // Seçili coin için haber riski (hafif; sadece seçili coin değişince çeker)
+  const [selNewsRisk, setSelNewsRisk] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    setSelNewsRisk(null);
+    if (!selected) return;
+    (async () => {
+      try {
+        const res = await fetchNews(selected);
+        if (!alive || res.unavailable || !res.items.length) return;
+        const risk = analyzeNewsRisk(res.items, selected);
+        if (alive) setSelNewsRisk(risk);
+      } catch (e) {}
+    })();
+    return () => { alive = false; };
+  }, [selected]);
+
+  // sel'e haber riskini ekle (varsa)
+  const sel = baseSel ? { ...baseSel, newsRisk: selNewsRisk } : baseSel;
 
   return (
     <div style={S.page}>
