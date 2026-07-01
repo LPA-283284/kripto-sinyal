@@ -15,6 +15,30 @@ const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 // Tek ortak liste belgesi — tüm cihazlar buraya bakar
 const WATCH_DOC = doc(db, "kripto", "watchlist");
+const PORTFOLIO_DOC = doc(db, "kripto", "portfolio");
+
+// Döviz kurları (USD bazlı) — anahtarsız, fail-safe. Gelmezse sadece USD gösterilir.
+async function fetchRates() {
+  // Önce Frankfurter (ECB, GBP verir ama TRY vermeyebilir), sonra yedek kaynak
+  try {
+    const r = await fetch("https://api.frankfurter.dev/v1/latest?base=USD&symbols=GBP,TRY");
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.rates && (j.rates.TRY || j.rates.GBP)) {
+        return { USD: 1, TRY: j.rates.TRY || null, GBP: j.rates.GBP || null };
+      }
+    }
+  } catch (e) {}
+  // Yedek: anahtarsız saatlik kaynak (TRY dahil)
+  try {
+    const r = await fetch("https://api.exchangerate.fun/latest?base=USD");
+    if (r.ok) {
+      const j = await r.json();
+      if (j && j.rates) return { USD: 1, TRY: j.rates.TRY || null, GBP: j.rates.GBP || null };
+    }
+  } catch (e) {}
+  return { USD: 1, TRY: null, GBP: null }; // fail-safe: sadece USD
+}
 
 const INTERVALS = [
   { v: "15m", label: "15dk" }, { v: "1h", label: "1sa" },
@@ -22,9 +46,11 @@ const INTERVALS = [
 ];
 const MTF = ["1h", "4h", "1d"];
 const STORAGE_KEY = "kripto_watch_v2";
+const PF_STORAGE_KEY = "kripto_portfoy_v1";
 const TABS = [
   { id: "piyasa", label: "Piyasa", icon: "📊" },
   { id: "izleme", label: "İzleme", icon: "👁" },
+  { id: "portfoy", label: "Portföy", icon: "💼" },
   { id: "haberler", label: "Haberler", icon: "📰" },
   { id: "araclar", label: "Araçlar", icon: "🛠" },
   { id: "ayarlar", label: "Ayarlar", icon: "⚙" },
@@ -429,7 +455,7 @@ async function fetchCoin(base, interval) {
 }
 
 const TONE = { buy: "#00e08a", sell: "#ff4d6d", hold: "#f0c040" };
-const CONF_COLOR = { "zayıf": "#7a8190", "orta": "#f0c040", "güçlü": "#00e08a" };
+const CONF_COLOR = { "zayıf": "var(--text3)", "orta": "#f0c040", "güçlü": "#00e08a" };
 const EX_COLOR = { Binance: "#f0b90b", MEXC: "#1972f5", Gate: "#e6486a", Bybit: "#f7a600" };
 const fmtPrice = (p) => p == null ? "—" :
   `$${p.toLocaleString("en-US", { maximumFractionDigits: p < 1 ? 6 : p < 100 ? 3 : 2 })}`;
@@ -464,7 +490,7 @@ function CoinLogo({ base, size = 34 }) {
   return (
     <img src={`https://assets.coincap.io/assets/icons/${base.toLowerCase()}@2x.png`}
       alt={base} width={size} height={size} onError={() => setFailed(true)}
-      style={{ borderRadius: "50%", flexShrink: 0, background: "#1a1e27" }} />
+      style={{ borderRadius: "50%", flexShrink: 0, background: "var(--border1)" }} />
   );
 }
 
@@ -546,8 +572,8 @@ function Gauge({ value, label }) {
       {arc(60, 0, "#ff4d6d")}
       {/* ibre */}
       <line x1={cx} y1={cy} x2={needle.x.toFixed(1)} y2={needle.y.toFixed(1)}
-        stroke="#e7eaf0" strokeWidth="3" strokeLinecap="round" />
-      <circle cx={cx} cy={cy} r="6" fill="#e7eaf0" />
+        stroke="var(--text0)" strokeWidth="3" strokeLinecap="round" />
+      <circle cx={cx} cy={cy} r="6" fill="var(--text0)" />
       {/* değer */}
       <text x={cx} y="86" textAnchor="middle" fontSize="26" fontWeight="800" fill={FG_COLOR(v)} fontFamily="system-ui,sans-serif">{v}</text>
       {label && <text x={cx} y="120" textAnchor="middle" fontSize="12" fontWeight="700" fill={FG_COLOR(v)} fontFamily="system-ui,sans-serif">{label}</text>}
@@ -604,7 +630,7 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
           {glob ? (
             <>
               <div style={{ fontSize: 26, fontWeight: 800, color: "#f0b90b" }}>{glob.btcDom.toFixed(1)}%</div>
-              <div style={{ fontSize: 11, color: "#7a8190" }}>ETH: {glob.ethDom.toFixed(1)}%</div>
+              <div style={{ fontSize: 11, color: "var(--text3)" }}>ETH: {glob.ethDom.toFixed(1)}%</div>
             </>
           ) : <div style={S.moLoad}>…</div>}
         </div>
@@ -624,7 +650,7 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
 
         {/* Trend coinler */}
         <div style={{ ...S.moCell, flex: "1 1 100%" }}>
-          <div style={S.moKey}>🔥 Trend Coinler <span style={{ color: "#5a606e", fontWeight: 400 }}>(eklemek için dokun)</span></div>
+          <div style={S.moKey}>🔥 Trend Coinler <span style={{ color: "var(--text4)", fontWeight: 400 }}>(eklemek için dokun)</span></div>
           {trend ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
               {trend.map((t) => {
@@ -874,11 +900,11 @@ function NewsTab({ watch }) {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
         {[["all","Tümü"],["24s","24 saat"],["7g","7 gün"]].map(([v,l]) => (
           <button key={v} className="chip" onClick={() => setTimeFilter(v)}
-            style={{ ...S.filterChip, borderColor: timeFilter === v ? "#5b8def" : "#23262f", color: timeFilter === v ? "#5b8def" : "#9098a6" }}>{l}</button>
+            style={{ ...S.filterChip, borderColor: timeFilter === v ? "#5b8def" : "var(--border2)", color: timeFilter === v ? "#5b8def" : "var(--text2)" }}>{l}</button>
         ))}
         {[["all","Tüm etki"],["yüksek","Yüksek"],["orta","Orta"],["düşük","Düşük"]].map(([v,l]) => (
           <button key={v} className="chip" onClick={() => setImpactFilter(v)}
-            style={{ ...S.filterChip, borderColor: impactFilter === v ? "#f0a030" : "#23262f", color: impactFilter === v ? "#f0a030" : "#9098a6" }}>{l}</button>
+            style={{ ...S.filterChip, borderColor: impactFilter === v ? "#f0a030" : "var(--border2)", color: impactFilter === v ? "#f0a030" : "var(--text2)" }}>{l}</button>
         ))}
       </div>
 
@@ -886,7 +912,7 @@ function NewsTab({ watch }) {
       {unavailable && (
         <div style={{ ...S.muted, textAlign: "center", padding: "24px 12px" }}>
           Haber verisi şu anda alınamıyor.
-          <div style={{ fontSize: 10.5, marginTop: 8, color: "#5a606e" }}>
+          <div style={{ fontSize: 10.5, marginTop: 8, color: "var(--text4)" }}>
             (Haber kaynakları tarayıcıdan doğrudan erişime kapalıdır; bu özellik bir proxy/backend
             bağlandığında otomatik çalışacaktır. Sahte haber gösterilmez.)
           </div>
@@ -901,21 +927,21 @@ function NewsTab({ watch }) {
         return (
           <div key={i} style={S.newsCard}>
             <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <div style={{ fontWeight: 700, fontSize: 13.5, color: "#e7eaf0" }}>{it.title}</div>
+              <div style={{ fontWeight: 700, fontSize: 13.5, color: "var(--text0)" }}>{it.title}</div>
               {it.impact && <span style={{ ...S.badge, color: impColor, borderColor: impColor, flexShrink: 0, height: "fit-content" }}>{it.impact}</span>}
             </div>
-            <div style={{ fontSize: 11, color: "#7a8190", marginTop: 4, display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 11, color: "var(--text3)", marginTop: 4, display: "flex", gap: 8, flexWrap: "wrap" }}>
               {it.source && <span>{it.source}</span>}
               {it.category && <span style={{ color: "#5b8def" }}>· {it.category}</span>}
               {it.publishedAt && <span>· {new Date(it.publishedAt).toLocaleString("tr-TR")}</span>}
             </div>
             <button className="chip" onClick={() => setOpen((o) => ({ ...o, [i]: !o[i] }))}
-              style={{ ...S.chipSm, marginTop: 8, borderColor: "#23262f", color: "#9098a6", fontSize: 11 }}>
+              style={{ ...S.chipSm, marginTop: 8, borderColor: "var(--border2)", color: "var(--text2)", fontSize: 11 }}>
               {open[i] ? "Detayı Kapat" : "Detayı Aç"}
             </button>
             {open[i] && (
               <div style={{ marginTop: 8 }}>
-                <div style={{ fontSize: 12.5, color: "#c9cfd9", lineHeight: 1.6 }}>{it.summary || "Özet bulunmuyor."}</div>
+                <div style={{ fontSize: 12.5, color: "var(--text1)", lineHeight: 1.6 }}>{it.summary || "Özet bulunmuyor."}</div>
                 {it.url && <a href={it.url} target="_blank" rel="noopener noreferrer"
                   style={{ fontSize: 11.5, color: "#5b8def", marginTop: 6, display: "inline-block" }}>Orijinal kaynağa git →</a>}
               </div>
@@ -1021,6 +1047,312 @@ function AISetup() {
   );
 }
 
+// ── PORTFÖY ────────────────────────────────────────────────
+async function fetchSpotPrice(base) {
+  try {
+    const { ohlc } = await resolveExchange(base, "1d");
+    return ohlc[ohlc.length - 1].close;
+  } catch (e) { return null; }
+}
+
+// Bir coinin günlük kapanış geçmişini { gün(YYYY-MM-DD): fiyat } olarak döndürür (fail-safe)
+async function fetchDailyHistory(base, days = 365) {
+  try {
+    const url = `https://api.binance.com/api/v3/klines?symbol=${base}USDT&interval=1d&limit=${Math.min(days, 1000)}`;
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    const j = await r.json();
+    if (!Array.isArray(j)) return null;
+    const map = {};
+    j.forEach((k) => {
+      const d = new Date(k[0]).toISOString().slice(0, 10);
+      map[d] = +k[4]; // kapanış
+    });
+    return map;
+  } catch (e) { return null; }
+}
+
+const CUR_SYM = { USD: "$", TRY: "₺", GBP: "£" };
+function fmtCur(amount, cur, rates) {
+  if (amount == null) return "—";
+  const rate = cur === "USD" ? 1 : (rates && rates[cur]);
+  if (!rate) return cur === "USD" ? `$${amount.toLocaleString("en-US", { maximumFractionDigits: 2 })}` : "—";
+  const v = amount * rate;
+  return `${CUR_SYM[cur]}${v.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+}
+
+function Portfolio({ tx, setTx, rates }) {
+  const [prices, setPrices] = useState({});
+  const [loading, setLoading] = useState(false);
+  const [cur, setCur] = useState("USD");
+  const [history, setHistory] = useState(null); // portföy geçmiş değer serisi
+  // yeni işlem formu
+  const [fCoin, setFCoin] = useState("");
+  const [fType, setFType] = useState("buy");
+  const [fAmount, setFAmount] = useState("");
+  const [fPrice, setFPrice] = useState("");
+  const [fDate, setFDate] = useState(() => new Date().toISOString().slice(0, 10)); // varsayılan bugün
+  const [fMsg, setFMsg] = useState("");
+
+  // portföydeki coinlerin fiyatlarını çek
+  const loadPrices = async () => {
+    const coins = Array.from(new Set(tx.map((t) => t.coin)));
+    if (coins.length === 0) return;
+    setLoading(true);
+    const out = {};
+    await Promise.all(coins.map(async (c) => { out[c] = await fetchSpotPrice(c); }));
+    setPrices(out);
+    setLoading(false);
+  };
+  useEffect(() => { loadPrices(); /* eslint-disable-next-line */ }, [tx.length]);
+
+  // Portföy geçmiş değer grafiği: işlemler + coinlerin geçmiş fiyatları
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (tx.length === 0) { setHistory(null); return; }
+      const coins = Array.from(new Set(tx.map((t) => t.coin)));
+      // en eski işlem tarihinden bugüne kaç gün
+      const firstTs = Math.min(...tx.map((t) => t.ts));
+      const daysSpan = Math.min(365, Math.ceil((Date.now() - firstTs) / 86400e3) + 2);
+      if (daysSpan < 2) { setHistory(null); return; } // tek gün: grafik anlamsız
+      // her coin için geçmiş fiyat haritası
+      const hist = {};
+      await Promise.all(coins.map(async (c) => { hist[c] = await fetchDailyHistory(c, daysSpan); }));
+      if (!alive) return;
+      // gün gün portföy değeri
+      const series = [];
+      const today = new Date();
+      for (let i = daysSpan - 1; i >= 0; i--) {
+        const d = new Date(today.getTime() - i * 86400e3);
+        const dayStr = d.toISOString().slice(0, 10);
+        const dayTs = d.getTime();
+        // o güne kadarki net miktarlar
+        let val = 0, hasPrice = false;
+        coins.forEach((c) => {
+          let qty = 0;
+          tx.forEach((t) => {
+            if (t.coin === c && t.ts <= dayTs) qty += t.type === "buy" ? t.amount : -t.amount;
+          });
+          if (qty > 1e-9 && hist[c]) {
+            // o güne en yakın fiyat (o gün yoksa bir önceki)
+            let price = hist[c][dayStr];
+            if (price == null) {
+              const keys = Object.keys(hist[c]).filter((k) => k <= dayStr).sort();
+              if (keys.length) price = hist[c][keys[keys.length - 1]];
+            }
+            if (price != null) { val += qty * price; hasPrice = true; }
+          }
+        });
+        if (hasPrice) series.push({ date: dayStr, value: val });
+      }
+      if (alive) setHistory(series.length >= 2 ? series : null);
+    })();
+    return () => { alive = false; };
+    // eslint-disable-next-line
+  }, [tx]);
+
+  const addTx = () => {
+    const coin = fCoin.trim().toUpperCase();
+    const amount = parseFloat(fAmount);
+    const price = parseFloat(fPrice);
+    if (!coin || !amount || amount <= 0 || !price || price <= 0) { setFMsg("Coin, miktar ve fiyat gerekli."); return; }
+    // seçilen tarihi kullan (yoksa bugün)
+    const ts = fDate ? new Date(fDate + "T12:00:00").getTime() : Date.now();
+    const newTx = { id: Date.now() + "-" + Math.random().toString(36).slice(2, 6), coin, type: fType, amount, price, ts };
+    setTx([...tx, newTx]);
+    setFCoin(""); setFAmount(""); setFPrice(""); setFMsg(`${coin} ${fType === "buy" ? "alımı" : "satışı"} eklendi.`);
+  };
+  const removeTx = (id) => setTx(tx.filter((t) => t.id !== id));
+
+  // pozisyonları hesapla (coin bazında ortalama maliyet + net miktar)
+  const positions = {};
+  tx.forEach((t) => {
+    if (!positions[t.coin]) positions[t.coin] = { coin: t.coin, qty: 0, cost: 0 };
+    const p = positions[t.coin];
+    if (t.type === "buy") { p.qty += t.amount; p.cost += t.amount * t.price; }
+    else { // satış: ortalama maliyetten düş
+      const avg = p.qty > 0 ? p.cost / p.qty : 0;
+      p.qty -= t.amount; p.cost -= t.amount * avg;
+      if (p.qty < 1e-9) { p.qty = 0; p.cost = 0; }
+    }
+  });
+  const posList = Object.values(positions).filter((p) => p.qty > 1e-9);
+
+  let totalValue = 0, totalCost = 0;
+  posList.forEach((p) => {
+    const price = prices[p.coin];
+    p.avgCost = p.qty > 0 ? p.cost / p.qty : 0;
+    p.value = price != null ? p.qty * price : null;
+    p.pnl = p.value != null ? p.value - p.cost : null;
+    p.pnlPct = p.value != null && p.cost > 0 ? (p.pnl / p.cost) * 100 : null;
+    if (p.value != null) { totalValue += p.value; totalCost += p.cost; }
+  });
+  const totalPnl = totalValue - totalCost;
+  const totalPnlPct = totalCost > 0 ? (totalPnl / totalCost) * 100 : 0;
+
+  return (
+    <div style={S.card}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <div style={S.cardHead}>PORTFÖY</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {["USD","TRY","GBP"].map((c) => (
+            <button key={c} className="chip" onClick={() => setCur(c)}
+              style={{ ...S.filterChip, borderColor: cur === c ? "#5b8def" : "var(--border2)", color: cur === c ? "#5b8def" : "var(--text2)" }}>
+              {CUR_SYM[c]} {c}
+            </button>
+          ))}
+          <button className="chip" onClick={loadPrices} disabled={loading}
+            style={{ ...S.chipSm, borderColor: "#5b8def", color: "#5b8def" }}>{loading ? "…" : "⟳"}</button>
+        </div>
+      </div>
+
+      {/* Toplam özet — büyük */}
+      <div style={{ textAlign: "center", padding: "10px 0 18px" }}>
+        <div style={{ fontSize: 12, color: "var(--text3)", marginBottom: 4 }}>Toplam Değer</div>
+        <div style={{ fontSize: 38, fontWeight: 800, letterSpacing: -1, lineHeight: 1.1 }}>{fmtCur(totalValue, cur, rates)}</div>
+        {totalCost > 0 && (
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginTop: 8 }}>
+            <span style={{ fontSize: 15, fontWeight: 700, color: totalPnl >= 0 ? "#00e08a" : "#ff4d6d" }}>
+              {totalPnl >= 0 ? "+" : ""}{fmtCur(totalPnl, cur, rates)}
+            </span>
+            <span style={{ fontSize: 12, fontWeight: 800, color: totalPnl >= 0 ? "#00e08a" : "#ff4d6d",
+              background: totalPnl >= 0 ? "rgba(0,224,138,0.12)" : "rgba(255,77,109,0.12)", borderRadius: 6, padding: "2px 8px" }}>
+              {totalPnl >= 0 ? "▲" : "▼"} {Math.abs(totalPnlPct).toFixed(2)}%
+            </span>
+          </div>
+        )}
+        {cur !== "USD" && !rates[cur] && <div style={{ ...S.muted, fontSize: 10, marginTop: 4 }}>({cur} kuru alınamadı, USD gösteriliyor)</div>}
+      </div>
+
+      {/* Portföy değer grafiği (geçmiş) */}
+      {history && history.length >= 2 && (() => {
+        const rate = cur === "USD" ? 1 : (rates && rates[cur]) || 1;
+        const vals = history.map((h) => h.value * rate);
+        const min = Math.min(...vals), max = Math.max(...vals);
+        const range = max - min || 1;
+        const w = 300, h = 70;
+        const path = vals.map((v, i) => {
+          const x = (i / (vals.length - 1)) * w;
+          const y = h - ((v - min) / range) * h;
+          return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+        }).join(" ");
+        const up = vals[vals.length - 1] >= vals[0];
+        const color = up ? "#00e08a" : "#ff4d6d";
+        return (
+          <div style={{ marginBottom: 16 }}>
+            <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{ width: "100%", height: 70, display: "block" }}>
+              <path d={`${path} L ${w},${h} L 0,${h} Z`} fill={color} opacity="0.08" />
+              <path d={path} fill="none" stroke={color} strokeWidth="1.5" vectorEffect="non-scaling-stroke" strokeLinejoin="round" />
+            </svg>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 9.5, color: "var(--text4)", marginTop: 2 }}>
+              <span>{history[0].date}</span>
+              <span>bugün</span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* Sütun başlıkları */}
+      {posList.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", padding: "0 4px 8px", fontSize: 10, color: "var(--text4)", letterSpacing: 0.5 }}>
+          <div style={{ flex: "1 1 auto" }}>VARLIK</div>
+          <div style={{ flex: "0 0 110px", textAlign: "center" }}>KÂR / ZARAR</div>
+          <div style={{ flex: "0 0 90px", textAlign: "right" }}>FİYAT</div>
+          <div style={{ flex: "0 0 24px" }}></div>
+        </div>
+      )}
+
+      {/* Pozisyonlar — görseldeki 3 sütunlu düzen */}
+      {posList.length === 0 && <div style={{ ...S.muted, marginBottom: 12 }}>Henüz pozisyon yok. Aşağıdan işlem ekle.</div>}
+      {posList.map((p) => (
+        <div key={p.coin} style={S.pfRow}>
+          {/* Sol: amblem + coin + miktar + değer */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "1 1 auto", minWidth: 0 }}>
+            <CoinLogo base={p.coin} size={30} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>{p.coin}
+                <span style={{ fontSize: 11, color: "var(--text3)", fontWeight: 500, marginLeft: 6 }}>
+                  {p.qty.toLocaleString("en-US", { maximumFractionDigits: 6 })}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: "var(--text1)", fontWeight: 600 }}>{p.value != null ? fmtCur(p.value, cur, rates) : "—"}</div>
+            </div>
+          </div>
+          {/* Orta: kâr/zarar renkli kutu */}
+          <div style={{ flex: "0 0 110px", textAlign: "center" }}>
+            {p.pnl != null ? (
+              <>
+                <div style={{ fontSize: 13, fontWeight: 700, color: p.pnl >= 0 ? "#00e08a" : "#ff4d6d" }}>
+                  {p.pnl >= 0 ? "+" : ""}{fmtCur(p.pnl, cur, rates)}
+                </div>
+                <div style={{ display: "inline-block", fontSize: 11, fontWeight: 800, marginTop: 2,
+                  color: p.pnl >= 0 ? "#00e08a" : "#ff4d6d",
+                  background: p.pnl >= 0 ? "rgba(0,224,138,0.12)" : "rgba(255,77,109,0.12)",
+                  borderRadius: 5, padding: "1px 7px" }}>
+                  {p.pnl >= 0 ? "▲" : "▼"} {Math.abs(p.pnlPct).toFixed(2)}%
+                </div>
+              </>
+            ) : <span style={{ color: "var(--text4)" }}>—</span>}
+          </div>
+          {/* Sağ: güncel fiyat */}
+          <div style={{ flex: "0 0 90px", textAlign: "right", fontSize: 13, fontWeight: 700 }}>
+            {prices[p.coin] != null ? fmtCur(prices[p.coin], cur, rates) : "—"}
+          </div>
+          <div style={{ flex: "0 0 24px", textAlign: "right", fontSize: 9.5, color: "var(--text4)" }} title={`ort. maliyet ${fmtCur(p.avgCost, cur, rates)}`}>ⓘ</div>
+        </div>
+      ))}
+
+      {/* Yeni işlem ekle */}
+      <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border1)" }}>
+        <div style={{ ...S.moKey, marginBottom: 8 }}>İŞLEM EKLE</div>
+        <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+          <button className="chip" onClick={() => setFType("buy")}
+            style={{ ...S.filterChip, borderColor: fType === "buy" ? "#00e08a" : "var(--border2)", color: fType === "buy" ? "#00e08a" : "var(--text2)" }}>Alım</button>
+          <button className="chip" onClick={() => setFType("sell")}
+            style={{ ...S.filterChip, borderColor: fType === "sell" ? "#ff4d6d" : "var(--border2)", color: fType === "sell" ? "#ff4d6d" : "var(--text2)" }}>Satım</button>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          <input value={fCoin} onChange={(e) => setFCoin(e.target.value)} placeholder="Coin (BTC)"
+            style={{ ...S.input, marginBottom: 0, flex: "1 1 70px" }} />
+          <input value={fAmount} onChange={(e) => setFAmount(e.target.value)} placeholder="Miktar" inputMode="decimal"
+            style={{ ...S.input, marginBottom: 0, flex: "1 1 70px" }} />
+          <input value={fPrice} onChange={(e) => setFPrice(e.target.value)} placeholder="Fiyat ($)" inputMode="decimal"
+            style={{ ...S.input, marginBottom: 0, flex: "1 1 80px" }} />
+          <input value={fDate} onChange={(e) => setFDate(e.target.value)} type="date"
+            style={{ ...S.input, marginBottom: 0, flex: "1 1 120px", colorScheme: "dark" }} />
+          <button className="chip" onClick={addTx} style={{ ...S.addBtn }}>+ Ekle</button>
+        </div>
+        <div style={{ ...S.muted, marginTop: 6, fontSize: 10 }}>Tarih: coini ne zaman aldığın (geçmiş grafik için önemli).</div>
+        {fMsg && <div style={{ ...S.muted, marginTop: 8 }}>{fMsg}</div>}
+      </div>
+
+      {/* İşlem geçmişi */}
+      {tx.length > 0 && (
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid var(--border1)" }}>
+          <div style={{ ...S.moKey, marginBottom: 8 }}>İŞLEM GEÇMİŞİ ({tx.length})</div>
+          {tx.slice().reverse().map((t) => (
+            <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", fontSize: 12, borderBottom: "1px solid var(--border0)" }}>
+              <span style={{ ...S.badge, color: t.type === "buy" ? "#00e08a" : "#ff4d6d", borderColor: t.type === "buy" ? "#00e08a" : "#ff4d6d", fontSize: 10 }}>
+                {t.type === "buy" ? "AL" : "SAT"}
+              </span>
+              <span style={{ fontWeight: 700, flex: "0 0 46px" }}>{t.coin}</span>
+              <span style={{ flex: 1, color: "var(--text2)" }}>{t.amount.toLocaleString("en-US", { maximumFractionDigits: 6 })} × {fmtPrice(t.price)}</span>
+              <span style={{ fontSize: 10, color: "var(--text4)" }}>{new Date(t.ts).toLocaleDateString("tr-TR")}</span>
+              <button onClick={() => removeTx(t.id)} style={S.removeBtn} className="chip">✕</button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ ...S.muted, marginTop: 12, fontSize: 10.5 }}>
+        Fiyatlar borsalardan, kurlar açık kaynaklardan alınır. Kâr/zarar ortalama maliyete göre hesaplanır.
+        Portföyün buluta kaydedilir (her cihazda aynı). Bu bir muhasebe/vergi aracı değildir, referans amaçlıdır.
+      </div>
+    </div>
+  );
+}
+
 function AISummary({ base, data }) {
   const [summary, setSummary] = useState("");
   const [error, setError] = useState("");
@@ -1041,7 +1373,7 @@ function AISummary({ base, data }) {
   };
 
   return (
-    <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #1a1e27" }}>
+    <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid var(--border1)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ fontSize: 13, fontWeight: 700, color: "#a06bff" }}>🤖 AI Yorumu</span>
         <button className="chip" onClick={run} disabled={loading}
@@ -1056,8 +1388,8 @@ function AISummary({ base, data }) {
       )}
       {error && <div style={{ ...S.muted, marginTop: 8, color: "#ff4d6d" }}>{error}</div>}
       {summary && (
-        <div style={{ marginTop: 10, fontSize: 12.5, color: "#c9cfd9", lineHeight: 1.65,
-          background: "#0a0d12", border: "1px solid #1a1e27", borderRadius: 10, padding: "12px 14px",
+        <div style={{ marginTop: 10, fontSize: 12.5, color: "var(--text1)", lineHeight: 1.65,
+          background: "var(--bg1)", border: "1px solid var(--border1)", borderRadius: 10, padding: "12px 14px",
           fontFamily: "system-ui, sans-serif" }}>
           {summary}
         </div>
@@ -1126,7 +1458,7 @@ function RiskScanner() {
 
           <div style={{ marginTop: 12 }}>
             {flags.map((f, i) => (
-              <div key={i} style={{ fontSize: 12.5, color: "#c9cfd9", padding: "5px 0", display: "flex", gap: 8 }}>
+              <div key={i} style={{ fontSize: 12.5, color: "var(--text1)", padding: "5px 0", display: "flex", gap: 8 }}>
                 <span style={{ color: RISK_COLOR[f.t], fontWeight: 700, flexShrink: 0 }}>{RISK_ICON[f.t]}</span>
                 <span>{f.m}</span>
               </div>
@@ -1221,7 +1553,7 @@ function LeverageSim() {
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 14 }}>
         {LEVS.map((l) => (
           <button key={l} className="chip" onClick={() => setLev(l)}
-            style={{ ...S.filterChip, borderColor: lev === l ? sevColor : "#23262f", color: lev === l ? sevColor : "#9098a6" }}>
+            style={{ ...S.filterChip, borderColor: lev === l ? sevColor : "var(--border2)", color: lev === l ? sevColor : "var(--text2)" }}>
             {l}x
           </button>
         ))}
@@ -1275,10 +1607,74 @@ export default function App() {
   const [sortMode, setSortMode] = useState("default");
   const [filterMode, setFilterMode] = useState("all");
   const [tab, setTab] = useState("piyasa");
+  const [theme, setTheme] = useState(() => localStorage.getItem("kripto_theme") || "system");
+
+  // Temayı uygula: koyu / açık / sistem
+  useEffect(() => {
+    const apply = () => {
+      let mode = theme;
+      if (theme === "system") {
+        mode = window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+      }
+      if (mode === "light") document.documentElement.setAttribute("data-theme", "light");
+      else document.documentElement.removeAttribute("data-theme");
+    };
+    apply();
+    localStorage.setItem("kripto_theme", theme);
+    // sistem seçiliyse, sistem teması değişince güncelle
+    if (theme === "system" && window.matchMedia) {
+      const mq = window.matchMedia("(prefers-color-scheme: light)");
+      mq.addEventListener("change", apply);
+      return () => mq.removeEventListener("change", apply);
+    }
+  }, [theme]);
+  const [tx, setTx] = useState(() => {
+    try { const s = JSON.parse(localStorage.getItem(PF_STORAGE_KEY)); if (Array.isArray(s)) return s; } catch (e) {}
+    return [];
+  });
+  const [rates, setRates] = useState({ USD: 1, TRY: null, GBP: null });
   const prevVerdicts = useRef({});
   const timerRef = useRef(null);
   const fbReady = useRef(false);       // ilk Firebase verisi geldi mi
   const skipNextWrite = useRef(false); // Firebase'den gelen değişikliği geri yazma
+  const pfReady = useRef(false);
+  const pfSkip = useRef(false);
+
+  // Döviz kurlarını çek (bir kez + saatte bir)
+  useEffect(() => {
+    let alive = true;
+    const load = async () => { const r = await fetchRates(); if (alive) setRates(r); };
+    load();
+    const id = setInterval(load, 60 * 60 * 1000);
+    return () => { alive = false; clearInterval(id); };
+  }, []);
+
+  // Portföyü Firebase'den dinle
+  useEffect(() => {
+    const unsub = onSnapshot(PORTFOLIO_DOC, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (Array.isArray(data.tx)) {
+          pfSkip.current = true;
+          setTx(data.tx);
+          try { localStorage.setItem(PF_STORAGE_KEY, JSON.stringify(data.tx)); } catch (e) {}
+        }
+      } else {
+        setDoc(PORTFOLIO_DOC, { tx: [] }).catch(() => {});
+      }
+      pfReady.current = true;
+    }, () => { pfReady.current = true; });
+    return () => unsub();
+    // eslint-disable-next-line
+  }, []);
+
+  // Portföy değişince kaydet + Firebase'e yaz
+  useEffect(() => {
+    try { localStorage.setItem(PF_STORAGE_KEY, JSON.stringify(tx)); } catch (e) {}
+    if (!pfReady.current) return;
+    if (pfSkip.current) { pfSkip.current = false; return; }
+    setDoc(PORTFOLIO_DOC, { tx }).catch(() => {});
+  }, [tx]);
 
   // Firebase'i dinle: başka cihazda değişince burada da güncellensin
   useEffect(() => {
@@ -1415,20 +1811,34 @@ export default function App() {
     <div style={S.page}>
       <style>{`
         *{box-sizing:border-box}
-        html,body,#root{margin:0;padding:0;width:100%;min-height:100%;background:#080a0e;color:#e7eaf0;}
+        /* KOYU TEMA (varsayılan) */
+        :root{
+          --bg0:#080a0e; --bg1:#0b0e13; --bg2:#11151d; --bg3:#161b24;
+          --border0:#15191f; --border1:#1a1e27; --border2:#23262f; --border3:#3a3f4b;
+          --text0:#e7eaf0; --text1:#c9cfd9; --text2:#9098a6; --text3:#7a8190; --text4:#5a606e;
+          --page-grad: radial-gradient(circle at 50% 0%, #11151d 0%, #080a0e 55%);
+        }
+        /* AÇIK TEMA */
+        [data-theme="light"]{
+          --bg0:#f4f6fa; --bg1:#ffffff; --bg2:#ffffff; --bg3:#eef1f6;
+          --border0:#e4e8ef; --border1:#dde2ea; --border2:#cdd4df; --border3:#b3bcca;
+          --text0:#151a22; --text1:#2b3240; --text2:#59616f; --text3:#79818f; --text4:#9aa2b0;
+          --page-grad: radial-gradient(circle at 50% 0%, #ffffff 0%, #f4f6fa 55%);
+        }
+        html,body,#root{margin:0;padding:0;width:100%;min-height:100%;background:var(--bg0);color:var(--text0);}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
         .live-dot{width:7px;height:7px;border-radius:50%;background:#00e08a;animation:pulse 1.6s infinite}
         .chip{transition:all .15s ease;cursor:pointer;font-family:inherit}
-        .chip:hover{border-color:#3a3f4b}
+        .chip:hover{border-color:var(--border3)}
         .row{transition:background .15s ease}
         .row:hover{background:#12161f}
         input{font-family:inherit}
         input:focus{outline:none;border-color:#5b8def}
         .strip{cursor:pointer;transition:border-color .15s}
-        .strip:hover{border-color:#3a3f4b}
+        .strip:hover{border-color:var(--border3)}
         .strip-scroll{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;}
         .strip-scroll::-webkit-scrollbar{height:5px}
-        .strip-scroll::-webkit-scrollbar-thumb{background:#23262f;border-radius:3px}
+        .strip-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:3px}
         .detail-grid{display:grid;gap:12px;grid-template-columns:1fr;}
         @media(min-width:760px){.detail-grid{grid-template-columns:1fr 1fr;}}
         @media(min-width:1100px){.detail-grid{grid-template-columns:1fr 1fr 1fr;}}
@@ -1443,13 +1853,13 @@ export default function App() {
         .bottomnav{
           position:fixed;left:0;right:0;bottom:0;z-index:50;
           display:flex;justify-content:space-around;align-items:center;
-          background:rgba(12,15,21,0.96);border-top:1px solid #1a1e27;
+          background:var(--bg1);border-top:1px solid var(--border1);
           padding:6px 4px;backdrop-filter:blur(10px);
         }
         .navbtn{
           flex:1;display:flex;flex-direction:column;align-items:center;gap:2px;
           background:none;border:none;cursor:pointer;font-family:inherit;
-          padding:6px 2px;color:#7a8190;font-size:10px;font-weight:600;
+          padding:6px 2px;color:var(--text3);font-size:10px;font-weight:600;
         }
         .navbtn .ico{font-size:18px;line-height:1;}
         .content{padding-bottom:76px;} /* alt menü için boşluk */
@@ -1461,16 +1871,16 @@ export default function App() {
           .sidenav{
             display:flex;flex-direction:column;gap:4px;
             width:190px;flex-shrink:0;position:sticky;top:20px;
-            background:linear-gradient(180deg,#11151d,#0b0e13);
-            border:1px solid #1a1e27;border-radius:14px;padding:10px;
+            background:linear-gradient(180deg,var(--bg2),var(--bg1));
+            border:1px solid var(--border1);border-radius:14px;padding:10px;
           }
           .sidebtn{
             display:flex;align-items:center;gap:10px;cursor:pointer;
             background:none;border:none;font-family:inherit;text-align:left;
-            padding:11px 12px;border-radius:9px;color:#9098a6;font-size:13.5px;font-weight:600;
+            padding:11px 12px;border-radius:9px;color:var(--text2);font-size:13.5px;font-weight:600;
             transition:all .15s;
           }
-          .sidebtn:hover{background:#161b24;}
+          .sidebtn:hover{background:var(--bg3);}
           .sidebtn .ico{font-size:16px;}
         }
       `}</style>
@@ -1487,8 +1897,13 @@ export default function App() {
           <div style={S.liveBox}>
             <button className="chip" onClick={() => loadAll()} style={{ ...S.chipSm, borderColor: "#5b8def", color: "#5b8def" }}>⟳</button>
             <button className="chip" onClick={() => setSoundOn((s) => !s)}
-              style={{ ...S.chipSm, borderColor: soundOn ? "#00e08a" : "#23262f", color: soundOn ? "#00e08a" : "#7a8190" }}>
+              style={{ ...S.chipSm, borderColor: soundOn ? "#00e08a" : "var(--border2)", color: soundOn ? "#00e08a" : "var(--text3)" }}>
               {soundOn ? "🔔" : "🔕"}
+            </button>
+            <button className="chip" title="Tema değiştir"
+              onClick={() => setTheme((t) => t === "dark" ? "light" : t === "light" ? "system" : "dark")}
+              style={{ ...S.chipSm, borderColor: "var(--border2)", color: "var(--text2)" }}>
+              {theme === "dark" ? "🌙" : theme === "light" ? "☀️" : "🖥"}
             </button>
             <span className="live-dot" />
           </div>
@@ -1499,7 +1914,7 @@ export default function App() {
           <nav className="sidenav">
             {TABS.map((t) => (
               <button key={t.id} className="sidebtn" onClick={() => setTab(t.id)}
-                style={tab === t.id ? { background: "#161b24", color: "#5b8def" } : {}}>
+                style={tab === t.id ? { background: "var(--bg3)", color: "#5b8def" } : {}}>
                 <span className="ico">{t.icon}</span>{t.label}
               </button>
             ))}
@@ -1518,13 +1933,13 @@ export default function App() {
             const up = d && !d.error && d.change >= 0;
             return (
               <div key={base} className="strip" onClick={() => setSelected(base)}
-                style={{ ...S.strip, borderColor: selected === base ? "#5b8def" : "#1a1e27" }}>
+                style={{ ...S.strip, borderColor: selected === base ? "#5b8def" : "var(--border1)" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
                   <CoinLogo base={base} size={18} />
-                  <span style={{ fontSize: 12, color: "#9098a6", fontWeight: 700 }}>{base}/USDT</span>
+                  <span style={{ fontSize: 12, color: "var(--text2)", fontWeight: 700 }}>{base}/USDT</span>
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 700, margin: "3px 0" }}>{d?.error ? "—" : fmtPrice(d?.price)}</div>
-                <div style={{ fontSize: 12, fontWeight: 700, color: !d || d.error ? "#5a606e" : up ? "#00e08a" : "#ff4d6d" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: !d || d.error ? "var(--text4)" : up ? "#00e08a" : "#ff4d6d" }}>
                   {d && !d.error ? `${up ? "+" : ""}${d.change.toFixed(2)}%` : ""}
                 </div>
               </div>
@@ -1540,7 +1955,7 @@ export default function App() {
                 <CoinLogo base={selected} size={34} />
                 <div>
                   <span style={{ fontSize: 20, fontWeight: 700 }}>{selected}/USDT</span>
-                  {sel.ex && <span style={{ ...S.exTag, color: EX_COLOR[sel.ex] || "#9098a6", borderColor: EX_COLOR[sel.ex] || "#23262f" }}>{sel.ex}</span>}
+                  {sel.ex && <span style={{ ...S.exTag, color: EX_COLOR[sel.ex] || "var(--text2)", borderColor: EX_COLOR[sel.ex] || "var(--border2)" }}>{sel.ex}</span>}
                 </div>
               </div>
               <div style={{ textAlign: "right" }}>
@@ -1555,7 +1970,7 @@ export default function App() {
             <div style={{ display: "flex", gap: 6, margin: "12px 0" }}>
               {INTERVALS.map((i) => (
                 <button key={i.v} className="chip" onClick={() => setIntervalSel(i)}
-                  style={{ ...S.chipSm, borderColor: interval.v === i.v ? "#5b8def" : "#23262f", color: interval.v === i.v ? "#5b8def" : "#9098a6" }}>
+                  style={{ ...S.chipSm, borderColor: interval.v === i.v ? "#5b8def" : "var(--border2)", color: interval.v === i.v ? "#5b8def" : "var(--text2)" }}>
                   {i.label}
                 </button>
               ))}
@@ -1570,14 +1985,14 @@ export default function App() {
                   </span>
                   <div>
                     <div style={{ fontSize: 18, fontWeight: 800, color: TONE[sel.sig.tone] }}>{sel.sig.verdict} SİNYALİ</div>
-                    <div style={{ fontSize: 11, color: "#7a8190" }}>
+                    <div style={{ fontSize: 11, color: "var(--text3)" }}>
                       Güven: {sel.sig.confidence.toUpperCase()} (%{Math.round(sel.sig.strength * 100)})
                     </div>
                   </div>
                 </div>
                 <div style={{ textAlign: "right" }}>
-                  <div style={{ fontSize: 10, color: "#7a8190", letterSpacing: 1 }}>ZAMAN UYUMU</div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: sel.mtf ? TONE[sel.mtf.atone] : "#7a8190" }}>
+                  <div style={{ fontSize: 10, color: "var(--text3)", letterSpacing: 1 }}>ZAMAN UYUMU</div>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: sel.mtf ? TONE[sel.mtf.atone] : "var(--text3)" }}>
                     {sel.mtf ? `${sel.mtf.align} (${sel.mtf.agree}/${sel.mtf.total})` : "—"}
                   </div>
                 </div>
@@ -1606,24 +2021,24 @@ export default function App() {
               <div style={S.reasonsGrid}>
                 {sel.sig.reasons.map((r, i) => (
                   <div key={i} style={S.reasonItem}>
-                    <span style={{ color: r.includes("aşırı satım") || r.includes("yukarı") || r.includes("pozitif") || r.includes("alt Bollinger") ? "#00e08a" : "#7a8190" }}>•</span> {r}
+                    <span style={{ color: r.includes("aşırı satım") || r.includes("yukarı") || r.includes("pozitif") || r.includes("alt Bollinger") ? "#00e08a" : "var(--text3)" }}>•</span> {r}
                   </div>
                 ))}
               </div>
               {/* Haber riski satırı (opsiyonel — veri yoksa gösterilmez) */}
               {sel.newsRisk && (
-                <div style={{ marginTop: 10, fontSize: 12, color: "#9098a6" }}>
+                <div style={{ marginTop: 10, fontSize: 12, color: "var(--text2)" }}>
                   Haber riski: <span style={{ fontWeight: 700, color: sel.newsRisk.level === "yüksek" ? "#ff4d6d" : sel.newsRisk.level === "orta" ? "#f0a030" : "#00e08a" }}>
-                    {sel.newsRisk.level.toUpperCase()}</span> <span style={{ color: "#5a606e" }}>· {sel.newsRisk.reason}</span>
+                    {sel.newsRisk.level.toUpperCase()}</span> <span style={{ color: "var(--text4)" }}>· {sel.newsRisk.reason}</span>
                 </div>
               )}
             </div>
 
             {/* ===== TÜREV PİYASA ANALİZİ (opsiyonel — Binance vadeli verisi varsa) ===== */}
             {sel.derivative && sel.derivAnalysis && (
-              <div style={{ ...S.signalBox, borderColor: "#23262f", marginTop: 14 }}>
+              <div style={{ ...S.signalBox, borderColor: "var(--border2)", marginTop: 14 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-                  <div style={{ fontSize: 13, fontWeight: 800, color: "#9098a6", letterSpacing: 0.5 }}>TÜREV PİYASA ANALİZİ</div>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "var(--text2)", letterSpacing: 0.5 }}>TÜREV PİYASA ANALİZİ</div>
                   <span style={{ ...S.badge,
                     color: sel.derivAnalysis.derivativeRisk === "yüksek" ? "#ff4d6d" : sel.derivAnalysis.derivativeRisk === "orta" ? "#f0a030" : "#00e08a",
                     borderColor: sel.derivAnalysis.derivativeRisk === "yüksek" ? "#ff4d6d" : sel.derivAnalysis.derivativeRisk === "orta" ? "#f0a030" : "#00e08a" }}>
@@ -1634,7 +2049,7 @@ export default function App() {
                   <div style={S.tpCell}><div style={S.tpKey}>Funding</div>
                     <div style={S.tpVal}>{sel.derivative.funding ? (sel.derivative.funding.rate * 100).toFixed(3) + "%" : "—"}</div></div>
                   <div style={S.tpCell}><div style={S.tpKey}>OI değişimi</div>
-                    <div style={{ ...S.tpVal, color: sel.derivative.oiHist ? (sel.derivative.oiHist.changePct >= 0 ? "#00e08a" : "#ff4d6d") : "#e7eaf0" }}>
+                    <div style={{ ...S.tpVal, color: sel.derivative.oiHist ? (sel.derivative.oiHist.changePct >= 0 ? "#00e08a" : "#ff4d6d") : "var(--text0)" }}>
                       {sel.derivative.oiHist ? (sel.derivative.oiHist.changePct >= 0 ? "+" : "") + sel.derivative.oiHist.changePct.toFixed(1) + "%" : "—"}</div></div>
                   <div style={S.tpCell}><div style={S.tpKey}>Long/Short</div>
                     <div style={S.tpVal}>{sel.derivative.lsr != null ? sel.derivative.lsr.toFixed(2) : "—"}</div></div>
@@ -1643,7 +2058,7 @@ export default function App() {
                 </div>
                 <div style={{ marginTop: 10 }}>
                   {sel.derivAnalysis.reasons.map((r, i) => (
-                    <div key={i} style={{ fontSize: 11.5, color: "#9098a6", padding: "3px 0" }}>· {r}</div>
+                    <div key={i} style={{ fontSize: 11.5, color: "var(--text2)", padding: "3px 0" }}>· {r}</div>
                   ))}
                 </div>
                 <div style={{ ...S.signalNote, marginTop: 8 }}>
@@ -1668,7 +2083,7 @@ export default function App() {
             <span style={S.filterLabel}>Sırala:</span>
             {[["default","Varsayılan"],["strong","En güçlü"],["alpha","A-Z"]].map(([v,l]) => (
               <button key={v} className="chip" onClick={() => setSortMode(v)}
-                style={{ ...S.filterChip, borderColor: sortMode === v ? "#5b8def" : "#23262f", color: sortMode === v ? "#5b8def" : "#9098a6" }}>{l}</button>
+                style={{ ...S.filterChip, borderColor: sortMode === v ? "#5b8def" : "var(--border2)", color: sortMode === v ? "#5b8def" : "var(--text2)" }}>{l}</button>
             ))}
           </div>
           <div style={S.filterBar}>
@@ -1676,18 +2091,18 @@ export default function App() {
             {[["all","Hepsi"],["buy","AL"],["sell","SAT"],["strong","Güçlü"]].map(([v,l]) => {
               const col = v === "buy" ? "#00e08a" : v === "sell" ? "#ff4d6d" : "#f0c040";
               return (<button key={v} className="chip" onClick={() => setFilterMode(v)}
-                style={{ ...S.filterChip, borderColor: filterMode === v ? col : "#23262f", color: filterMode === v ? col : "#9098a6" }}>{l}</button>);
+                style={{ ...S.filterChip, borderColor: filterMode === v ? col : "var(--border2)", color: filterMode === v ? col : "var(--text2)" }}>{l}</button>);
             })}
           </div>
           {watch.length === 0 && <div style={S.muted}>Aşağıdan coin ekle.</div>}
           {watch.length > 0 && displayList.length === 0 && <div style={S.muted}>Bu filtreye uyan coin yok.</div>}
           {displayList.map(({ base, d }) => (
             <div key={base} className="row" style={S.lrow} onClick={() => setSelected(base)}>
-              <div style={{ flex: "0 0 84px", fontWeight: 700, color: selected === base ? "#5b8def" : "#e7eaf0", display: "flex", alignItems: "center", gap: 7 }}>
+              <div style={{ flex: "0 0 84px", fontWeight: 700, color: selected === base ? "#5b8def" : "var(--text0)", display: "flex", alignItems: "center", gap: 7 }}>
                 <CoinLogo base={base} size={20} />{base}
               </div>
-              <div style={{ flex: 1, color: "#c9cfd9" }}>{d?.error ? "—" : fmtPrice(d?.price)}</div>
-              <div style={{ flex: "0 0 60px", textAlign: "right", color: !d || d.error ? "#5a606e" : d.change >= 0 ? "#00e08a" : "#ff4d6d" }}>
+              <div style={{ flex: 1, color: "var(--text1)" }}>{d?.error ? "—" : fmtPrice(d?.price)}</div>
+              <div style={{ flex: "0 0 60px", textAlign: "right", color: !d || d.error ? "var(--text4)" : d.change >= 0 ? "#00e08a" : "#ff4d6d" }}>
                 {d && !d.error ? `${d.change >= 0 ? "+" : ""}${d.change.toFixed(2)}%` : ""}
               </div>
               <div style={{ flex: "0 0 54px", textAlign: "right" }}>
@@ -1711,6 +2126,11 @@ export default function App() {
           </div>
           {addMsg && <div style={{ ...S.muted, marginTop: 8 }}>{addMsg}</div>}
         </div>
+          </>)}
+
+          {/* ===== PORTFÖY SEKMESİ ===== */}
+          {tab === "portfoy" && (<>
+        <Portfolio tx={tx} setTx={setTx} rates={rates} />
           </>)}
 
           {/* ===== HABERLER SEKMESİ ===== */}
@@ -1759,69 +2179,70 @@ export default function App() {
 }
 
 const S = {
-  page: { minHeight: "100vh", width: "100%", background: "radial-gradient(circle at 50% 0%, #11151d 0%, #080a0e 55%)",
-    color: "#e7eaf0", fontFamily: "'SF Mono','Menlo','Consolas',monospace", padding: "20px 16px", boxSizing: "border-box" },
+  page: { minHeight: "100vh", width: "100%", background: "radial-gradient(circle at 50% 0%, var(--bg2) 0%, var(--bg0) 55%)",
+    color: "var(--text0)", fontFamily: "'SF Mono','Menlo','Consolas',monospace", padding: "20px 16px", boxSizing: "border-box" },
   shell: { margin: "0 auto", width: "100%" },
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
   kicker: { fontSize: 9, letterSpacing: 2, color: "#5b8def", marginBottom: 2 },
-  title: { fontSize: 20, fontWeight: 700, margin: 0, letterSpacing: -0.5, color: "#e7eaf0" },
+  title: { fontSize: 20, fontWeight: 700, margin: 0, letterSpacing: -0.5, color: "var(--text0)" },
   liveBox: { display: "flex", alignItems: "center", gap: 8 },
-  chipSm: { background: "#11151d", border: "1px solid #23262f", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600 },
-  strip: { minWidth: 130, background: "linear-gradient(180deg,#11151d,#0c0f15)", border: "1px solid #1a1e27",
+  chipSm: { background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: 600 },
+  strip: { minWidth: 130, background: "linear-gradient(180deg,var(--bg2),var(--bg1))", border: "1px solid var(--border1)",
     borderRadius: 12, padding: "12px 14px", flexShrink: 0 },
-  card: { background: "linear-gradient(180deg,#11151d,#0b0e13)", border: "1px solid #1a1e27", borderRadius: 16, padding: 16, marginBottom: 14 },
-  cardHead: { fontSize: 10, letterSpacing: 1.5, color: "#7a8190", marginBottom: 10 },
+  card: { background: "linear-gradient(180deg,var(--bg2),var(--bg1))", border: "1px solid var(--border1)", borderRadius: 16, padding: 16, marginBottom: 14 },
+  cardHead: { fontSize: 10, letterSpacing: 1.5, color: "var(--text3)", marginBottom: 10 },
   moGrid: { display: "flex", flexWrap: "wrap", gap: 12 },
-  moCell: { flex: "1 1 140px", background: "#0a0d12", border: "1px solid #1a1e27", borderRadius: 10, padding: "12px 14px" },
-  moKey: { fontSize: 10.5, color: "#7a8190", marginBottom: 6, letterSpacing: 0.3 },
-  moBarTrack: { height: 5, background: "#1a1e27", borderRadius: 3, marginTop: 7, overflow: "hidden" },
+  moCell: { flex: "1 1 140px", background: "var(--bg1)", border: "1px solid var(--border1)", borderRadius: 10, padding: "12px 14px" },
+  moKey: { fontSize: 10.5, color: "var(--text3)", marginBottom: 6, letterSpacing: 0.3 },
+  moBarTrack: { height: 5, background: "var(--border1)", borderRadius: 3, marginTop: 7, overflow: "hidden" },
   moBarFill: { height: "100%", borderRadius: 3, transition: "width .4s ease" },
-  moLoad: { fontSize: 18, color: "#3a3f4b" },
+  moLoad: { fontSize: 18, color: "var(--border3)" },
   trendChip: { fontSize: 11.5, fontWeight: 700, color: "#f0a030", background: "rgba(240,160,48,0.1)",
     border: "1px solid rgba(240,160,48,0.3)", borderRadius: 6, padding: "3px 9px" },
   riskStats: { display: "flex", flexWrap: "wrap", gap: 8 },
-  riskStat: { flex: "1 1 100px", background: "#0a0d12", border: "1px solid #1a1e27", borderRadius: 8, padding: "8px 11px" },
-  riskStatKey: { display: "block", fontSize: 10, color: "#7a8190", marginBottom: 3 },
+  riskStat: { flex: "1 1 100px", background: "var(--bg1)", border: "1px solid var(--border1)", borderRadius: 8, padding: "8px 11px" },
+  riskStatKey: { display: "block", fontSize: 10, color: "var(--text3)", marginBottom: 3 },
   riskStatVal: { fontSize: 14, fontWeight: 700 },
   selHead: { display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
   exTag: { fontSize: 9.5, fontWeight: 700, border: "1px solid", borderRadius: 5, padding: "1px 6px", marginLeft: 8, letterSpacing: 0.5 },
   chartLabel: { fontSize: 10, marginBottom: 4 },
-  subLabel: { fontSize: 10, color: "#7a8190", margin: "10px 0 2px", letterSpacing: 1 },
-  signalBox: { border: "2px solid", borderRadius: 14, padding: 16, marginTop: 16, background: "#0b0e13" },
+  subLabel: { fontSize: 10, color: "var(--text3)", margin: "10px 0 2px", letterSpacing: 1 },
+  signalBox: { border: "2px solid", borderRadius: 14, padding: 16, marginTop: 16, background: "var(--bg1)" },
   signalTop: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 },
-  barTrack: { height: 8, background: "#1a1e27", borderRadius: 4, overflow: "hidden", marginBottom: 4 },
+  barTrack: { height: 8, background: "var(--border1)", borderRadius: 4, overflow: "hidden", marginBottom: 4 },
   barFill: { height: "100%", borderRadius: 4, transition: "width .4s ease" },
   signalIcon: { width: 40, height: 40, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
-    fontSize: 20, color: "#0b0e13", fontWeight: 900 },
-  tpGrid: { display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 0", borderTop: "1px solid #1a1e27", borderBottom: "1px solid #1a1e27" },
+    fontSize: 20, color: "var(--bg1)", fontWeight: 900 },
+  tpGrid: { display: "flex", flexWrap: "wrap", gap: 8, padding: "12px 0", borderTop: "1px solid var(--border1)", borderBottom: "1px solid var(--border1)" },
   tpCell: { flex: "1 1 80px", textAlign: "center" },
-  tpKey: { fontSize: 9.5, color: "#7a8190", marginBottom: 3, letterSpacing: 0.5 },
+  tpKey: { fontSize: 9.5, color: "var(--text3)", marginBottom: 3, letterSpacing: 0.5 },
   tpVal: { fontSize: 13, fontWeight: 700 },
-  reasonsTitle: { fontSize: 11, color: "#9098a6", margin: "14px 0 8px", fontWeight: 700 },
+  reasonsTitle: { fontSize: 11, color: "var(--text2)", margin: "14px 0 8px", fontWeight: 700 },
   reasonsGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 14px" },
-  reasonItem: { fontSize: 12, color: "#c9cfd9" },
-  signalNote: { fontSize: 10.5, color: "#5a606e", marginTop: 12, lineHeight: 1.5, fontFamily: "system-ui,sans-serif" },
-  newsCard: { background: "#0a0d12", border: "1px solid #1a1e27", borderRadius: 10, padding: "12px 14px", marginBottom: 10 },
+  reasonItem: { fontSize: 12, color: "var(--text1)" },
+  signalNote: { fontSize: 10.5, color: "var(--text4)", marginTop: 12, lineHeight: 1.5, fontFamily: "system-ui,sans-serif" },
+  newsCard: { background: "var(--bg1)", border: "1px solid var(--border1)", borderRadius: 10, padding: "12px 14px", marginBottom: 10 },
+  pfRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 8px", borderBottom: "1px solid var(--border0)" },
   filterBar: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginBottom: 8 },
-  filterLabel: { fontSize: 11, color: "#5a606e", minWidth: 42 },
-  filterChip: { background: "#11151d", border: "1px solid #23262f", borderRadius: 7, padding: "4px 11px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
+  filterLabel: { fontSize: 11, color: "var(--text4)", minWidth: 42 },
+  filterChip: { background: "var(--bg2)", border: "1px solid var(--border2)", borderRadius: 7, padding: "4px 11px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" },
   lrow: { display: "flex", alignItems: "center", padding: "11px 8px", borderRadius: 8, fontSize: 14, gap: 4, cursor: "pointer" },
   badge: { fontSize: 11, fontWeight: 800, letterSpacing: 1, border: "1px solid", borderRadius: 6, padding: "2px 8px" },
   removeBtn: { flex: "0 0 auto", background: "rgba(255,77,109,0.10)", border: "1px solid #ff4d6d", color: "#ff4d6d",
     borderRadius: 7, padding: "5px 10px", fontSize: 12, fontWeight: 700, cursor: "pointer", marginLeft: 8 },
   addBtn: { background: "rgba(0,224,138,0.12)", border: "1px solid #00e08a", color: "#00e08a", borderRadius: 8,
     padding: "0 16px", fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" },
-  input: { width: "100%", boxSizing: "border-box", background: "#0a0d12", border: "1px solid #23262f", borderRadius: 8,
-    padding: "10px 12px", color: "#e7eaf0", fontSize: 13, marginBottom: 12 },
-  muted: { color: "#7a8190", fontSize: 12.5, lineHeight: 1.5 },
-  disclaimer: { marginTop: 14, fontSize: 11, lineHeight: 1.6, color: "#5a606e", fontFamily: "system-ui,sans-serif" },
+  input: { width: "100%", boxSizing: "border-box", background: "var(--bg1)", border: "1px solid var(--border2)", borderRadius: 8,
+    padding: "10px 12px", color: "var(--text0)", fontSize: 13, marginBottom: 12 },
+  muted: { color: "var(--text3)", fontSize: 12.5, lineHeight: 1.5 },
+  disclaimer: { marginTop: 14, fontSize: 11, lineHeight: 1.6, color: "var(--text4)", fontFamily: "system-ui,sans-serif" },
 };
 const RS = {
   row: { display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 },
-  label: { fontSize: 11, color: "#7a8190", marginBottom: 4 },
-  input: { width: "100%", boxSizing: "border-box", background: "#0a0d12", border: "1px solid #23262f", borderRadius: 8, padding: "9px 11px", color: "#e7eaf0", fontSize: 14 },
-  results: { background: "#0a0d12", borderRadius: 10, padding: "8px 14px", marginTop: 4 },
-  resRow: { display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: "1px solid #15191f", fontSize: 13.5 },
-  resKey: { color: "#9098a6" }, resVal: { fontWeight: 700, color: "#e7eaf0" },
-  hint: { fontSize: 11, lineHeight: 1.6, color: "#5a606e", marginTop: 12, fontFamily: "system-ui,sans-serif" },
+  label: { fontSize: 11, color: "var(--text3)", marginBottom: 4 },
+  input: { width: "100%", boxSizing: "border-box", background: "var(--bg1)", border: "1px solid var(--border2)", borderRadius: 8, padding: "9px 11px", color: "var(--text0)", fontSize: 14 },
+  results: { background: "var(--bg1)", borderRadius: 10, padding: "8px 14px", marginTop: 4 },
+  resRow: { display: "flex", justifyContent: "space-between", padding: "7px 0", borderBottom: "1px solid var(--border0)", fontSize: 13.5 },
+  resKey: { color: "var(--text2)" }, resVal: { fontWeight: 700, color: "var(--text0)" },
+  hint: { fontSize: 11, lineHeight: 1.6, color: "var(--text4)", marginTop: 12, fontFamily: "system-ui,sans-serif" },
 };
