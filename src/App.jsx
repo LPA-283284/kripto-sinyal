@@ -634,6 +634,46 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
 // 3) CoinDesk RSS 4) CoinTelegraph RSS. Proxy URL'i NEWS_PROXY'ye yazılınca otomatik çalışır.
 const NEWS_PROXY = "https://kripto-haber.gerekligereksiz.workers.dev/"; // Cloudflare Worker haber proxy
 
+// ── AI Yorum (Claude üzerinden, Cloudflare Worker proxy) ──
+const AI_PROXY = "https://kripto-ai.gerekligereksiz.workers.dev/";
+const AI_PASS_KEY = "kripto_ai_pass"; // gizli parola cihazda saklanır, koda gömülmez
+
+async function fetchAISummary(contextText) {
+  const pass = localStorage.getItem(AI_PASS_KEY) || "";
+  if (!pass) return { error: "AI parolası girilmemiş (Ayarlar'dan gir)." };
+  try {
+    const r = await fetch(AI_PROXY, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-App-Password": pass },
+      body: JSON.stringify({ context: contextText }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return { error: j.error || "AI servisi yanıt vermedi." };
+    return { summary: j.summary || "" };
+  } catch (e) {
+    return { error: "AI bağlantı hatası." };
+  }
+}
+
+// Seçili coinin verisini AI'ya gönderilecek metne dönüştür
+function buildAIContext(base, d) {
+  if (!d || !d.sig) return "";
+  const s = d.sig;
+  let t = `Coin: ${base}/USDT\nFiyat: ${fmtPrice(d.price)} (24s: ${d.change >= 0 ? "+" : ""}${d.change.toFixed(2)}%)\n`;
+  t += `Teknik sinyal: ${s.verdict}, güven %${Math.round(s.strength * 100)} (${s.confidence})\n`;
+  t += `Zaman uyumu: ${d.mtf ? d.mtf.align + " (" + d.mtf.agree + "/" + d.mtf.total + ")" : "—"}\n`;
+  t += `Göstergeler: ${s.reasons.join("; ")}\n`;
+  if (d.derivative && d.derivAnalysis) {
+    const dv = d.derivative, da = d.derivAnalysis;
+    t += `Türev: funding ${dv.funding ? (dv.funding.rate * 100).toFixed(3) + "%" : "—"}, `;
+    t += `OI değişimi ${dv.oiHist ? dv.oiHist.changePct.toFixed(1) + "%" : "—"}, `;
+    t += `long/short ${dv.lsr != null ? dv.lsr.toFixed(2) : "—"}, `;
+    t += `türev risk: ${da.derivativeRisk}\n`;
+  }
+  if (d.newsRisk) t += `Haber riski: ${d.newsRisk.level} (${d.newsRisk.reason})\n`;
+  return t;
+}
+
 const NEWS_NEG = ["hack","exploit","security breach","breach","lawsuit","sec ","investigation","bankruptcy","liquidation","delisting","delist","attack","stolen","scam","rug","halt","ban","fraud"];
 const NEWS_POS = ["etf approval","etf","approval","listing","partnership","integration","mainnet","upgrade","burn","adoption","institutional","staking","launch"];
 const NEWS_CAT = [
@@ -901,6 +941,93 @@ function TelegramSetup() {
         </button>
       </div>
       {msg && <div style={{ ...S.muted, marginTop: 10 }}>{msg}</div>}
+    </div>
+  );
+}
+
+function AISetup() {
+  const [pass, setPass] = useState(() => localStorage.getItem(AI_PASS_KEY) || "");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const save = () => {
+    if (pass.trim()) localStorage.setItem(AI_PASS_KEY, pass.trim());
+    else localStorage.removeItem(AI_PASS_KEY);
+    setMsg("Kaydedildi (bu cihazda).");
+  };
+  const test = async () => {
+    save(); setBusy(true); setMsg("Test ediliyor…");
+    const res = await fetchAISummary("Coin: TEST/USDT\nTeknik sinyal: BEKLE, güven %40\nBu bir bağlantı testidir.");
+    setMsg(res.error ? `Hata: ${res.error}` : "Başarılı! AI bağlantısı çalışıyor.");
+    setBusy(false);
+  };
+  const connected = !!localStorage.getItem(AI_PASS_KEY);
+
+  return (
+    <div style={S.card}>
+      <div style={S.cardHead}>AI YORUM AYARI {connected && <span style={{ color: "#00e08a" }}>● bağlı</span>}</div>
+      <div style={{ ...S.muted, marginBottom: 12 }}>
+        Her coinin sinyal kutusunda "AI Yorumu" ile veriyi Türkçe özetletebilirsin. AI tahmin yapmaz,
+        sadece mevcut veriyi yorumlar. Aşağıya, sunucunda (Cloudflare) belirlediğin gizli parolayı gir.
+        Parola sadece bu cihazda saklanır.
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={RS.label}>AI Gizli Parola</div>
+        <input value={pass} onChange={(e) => setPass(e.target.value)} type="password"
+          placeholder="Cloudflare'de belirlediğin parola" style={RS.input} />
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button className="chip" onClick={save} style={{ ...S.chipSm, borderColor: "#5b8def", color: "#5b8def" }}>Kaydet</button>
+        <button className="chip" onClick={test} disabled={busy} style={{ ...S.addBtn, opacity: busy ? 0.6 : 1 }}>
+          {busy ? "…" : "Test et"}
+        </button>
+      </div>
+      {msg && <div style={{ ...S.muted, marginTop: 10 }}>{msg}</div>}
+    </div>
+  );
+}
+
+function AISummary({ base, data }) {
+  const [summary, setSummary] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const hasPass = !!localStorage.getItem(AI_PASS_KEY);
+
+  // coin değişince önceki özeti temizle
+  useEffect(() => { setSummary(""); setError(""); }, [base]);
+
+  const run = async () => {
+    setLoading(true); setError(""); setSummary("");
+    const ctx = buildAIContext(base, data);
+    if (!ctx) { setError("Yorumlanacak veri yok."); setLoading(false); return; }
+    const res = await fetchAISummary(ctx);
+    if (res.error) setError(res.error);
+    else setSummary(res.summary);
+    setLoading(false);
+  };
+
+  return (
+    <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #1a1e27" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: "#a06bff" }}>🤖 AI Yorumu</span>
+        <button className="chip" onClick={run} disabled={loading}
+          style={{ ...S.chipSm, borderColor: "#a06bff", color: "#a06bff", opacity: loading ? 0.6 : 1 }}>
+          {loading ? "Düşünüyor…" : summary ? "Yenile" : "Yorumla"}
+        </button>
+      </div>
+      {!hasPass && (
+        <div style={{ ...S.muted, marginTop: 8, fontSize: 11 }}>
+          AI yorumu için önce Ayarlar sekmesinden AI parolanı gir.
+        </div>
+      )}
+      {error && <div style={{ ...S.muted, marginTop: 8, color: "#ff4d6d" }}>{error}</div>}
+      {summary && (
+        <div style={{ marginTop: 10, fontSize: 12.5, color: "#c9cfd9", lineHeight: 1.65,
+          background: "#0a0d12", border: "1px solid #1a1e27", borderRadius: 10, padding: "12px 14px",
+          fontFamily: "system-ui, sans-serif" }}>
+          {summary}
+        </div>
+      )}
     </div>
   );
 }
@@ -1491,6 +1618,9 @@ export default function App() {
                 </div>
               </div>
             )}
+
+            {/* ===== AI YORUMU (opsiyonel — istenince çalışır) ===== */}
+            <AISummary base={selected} data={sel} />
           </div>
         )}
           </>)}
@@ -1566,6 +1696,8 @@ export default function App() {
           {/* ===== AYARLAR SEKMESİ ===== */}
           {tab === "ayarlar" && (<>
         <TelegramSetup />
+
+        <AISetup />
 
         <div style={S.disclaimer}>
           Bu araç teknik göstergeleri (RSI, EMA, MACD, Bollinger) birleştirir; güven skoru, zaman
