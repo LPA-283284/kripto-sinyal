@@ -517,6 +517,44 @@ async function fetchTrending() {
 
 const FG_COLOR = (v) => v <= 25 ? "#ff4d6d" : v <= 45 ? "#f0a030" : v <= 55 ? "#f0c040" : v <= 75 ? "#9ed85b" : "#00e08a";
 const FG_TR = { "Extreme Fear": "Aşırı Korku", "Fear": "Korku", "Neutral": "Nötr", "Greed": "Açgözlülük", "Extreme Greed": "Aşırı Açgözlülük" };
+
+// Yarım daire gösterge (gauge) — Korku/Açgözlülük için. 0=sol, 100=sağ.
+// Renk: sol yeşil (düşük risk) → orta sarı → sağ kırmızı (açgözlülük = riskli)
+function Gauge({ value, label }) {
+  const v = Math.max(0, Math.min(100, value || 0));
+  const cx = 100, cy = 100, r = 78;
+  // yarım daire: 180° (sol) → 0° (sağ)
+  const polar = (deg) => {
+    const rad = (deg * Math.PI) / 180;
+    return { x: cx + r * Math.cos(rad), y: cy - r * Math.sin(rad) };
+  };
+  const arc = (startDeg, endDeg, color) => {
+    const s = polar(startDeg), e = polar(endDeg);
+    const large = Math.abs(endDeg - startDeg) > 180 ? 1 : 0;
+    const sweep = startDeg > endDeg ? 1 : 0;
+    return <path d={`M ${s.x.toFixed(1)} ${s.y.toFixed(1)} A ${r} ${r} 0 ${large} ${sweep} ${e.x.toFixed(1)} ${e.y.toFixed(1)}`}
+      stroke={color} strokeWidth="16" fill="none" strokeLinecap="round" />;
+  };
+  // değer açısı: 0 → 180°(sol), 100 → 0°(sağ)
+  const angle = 180 - (v / 100) * 180;
+  const needle = polar(angle);
+  return (
+    <svg viewBox="0 0 200 130" style={{ width: "100%", maxWidth: 220, display: "block", margin: "4px auto 0" }}>
+      {/* renk yayları: sol yeşil → sarı → kırmızı */}
+      {arc(180, 120, "#00e08a")}
+      {arc(120, 60, "#f0c040")}
+      {arc(60, 0, "#ff4d6d")}
+      {/* ibre */}
+      <line x1={cx} y1={cy} x2={needle.x.toFixed(1)} y2={needle.y.toFixed(1)}
+        stroke="#e7eaf0" strokeWidth="3" strokeLinecap="round" />
+      <circle cx={cx} cy={cy} r="6" fill="#e7eaf0" />
+      {/* değer */}
+      <text x={cx} y="86" textAnchor="middle" fontSize="26" fontWeight="800" fill={FG_COLOR(v)} fontFamily="system-ui,sans-serif">{v}</text>
+      {label && <text x={cx} y="120" textAnchor="middle" fontSize="12" fontWeight="700" fill={FG_COLOR(v)} fontFamily="system-ui,sans-serif">{label}</text>}
+    </svg>
+  );
+}
+
 const fmtBig = (n) => {
   if (n == null) return "—";
   if (n >= 1e12) return `$${(n / 1e12).toFixed(2)}T`;
@@ -553,14 +591,10 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
       <div style={S.cardHead}>PİYASA GENEL GÖRÜNÜMÜ</div>
       <div style={S.moGrid}>
         {/* Fear & Greed */}
-        <div style={S.moCell}>
+        <div style={{ ...S.moCell, flex: "1 1 200px" }}>
           <div style={S.moKey}>Korku / Açgözlülük</div>
           {fg ? (
-            <>
-              <div style={{ fontSize: 26, fontWeight: 800, color: FG_COLOR(fg.value) }}>{fg.value}</div>
-              <div style={{ fontSize: 11, color: FG_COLOR(fg.value), fontWeight: 700 }}>{FG_TR[fg.label] || fg.label}</div>
-              <div style={S.moBarTrack}><div style={{ ...S.moBarFill, width: `${fg.value}%`, background: FG_COLOR(fg.value) }} /></div>
-            </>
+            <Gauge value={fg.value} label={FG_TR[fg.label] || fg.label} />
           ) : <div style={S.moLoad}>…</div>}
         </div>
 
