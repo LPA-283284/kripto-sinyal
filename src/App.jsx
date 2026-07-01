@@ -615,9 +615,9 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
   return (
     <div style={S.card}>
       <div style={S.cardHead}>PİYASA GENEL GÖRÜNÜMÜ</div>
-      <div style={S.moGrid}>
+      <div className="mo-grid">
         {/* Fear & Greed */}
-        <div style={{ ...S.moCell, flex: "1 1 200px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 150 }}>
+        <div className="mo-fear" style={{ ...S.moCell, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 150 }}>
           <div style={S.moKey}>Korku / Açgözlülük</div>
           {fg ? (
             <Gauge value={fg.value} label={FG_TR[fg.label] || fg.label} />
@@ -625,7 +625,7 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
         </div>
 
         {/* BTC Dominance */}
-        <div style={{ ...S.moCell, flex: "1 1 160px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", minHeight: 150 }}>
+        <div className="mo-item" style={{ ...S.moCell, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", minHeight: 150 }}>
           <div style={S.moKey}>BTC Hakimiyeti</div>
           {glob ? (
             <>
@@ -636,7 +636,7 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
         </div>
 
         {/* Toplam piyasa değeri */}
-        <div style={{ ...S.moCell, flex: "1 1 160px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", minHeight: 150 }}>
+        <div className="mo-item" style={{ ...S.moCell, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", minHeight: 150 }}>
           <div style={S.moKey}>Toplam Piyasa Değeri</div>
           {glob ? (
             <>
@@ -649,7 +649,7 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
         </div>
 
         {/* Trend coinler */}
-        <div style={{ ...S.moCell, flex: "1 1 100%" }}>
+        <div className="mo-full" style={{ ...S.moCell }}>
           <div style={S.moKey}>🔥 Trend Coinler <span style={{ color: "var(--text4)", fontWeight: 400 }}>(eklemek için dokun)</span></div>
           {trend ? (
             <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
@@ -1828,6 +1828,14 @@ export default function App() {
         html,body,#root{margin:0;padding:0;width:100%;min-height:100%;background:var(--bg0);color:var(--text0);}
         @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
         .live-dot{width:7px;height:7px;border-radius:50%;background:#00e08a;animation:pulse 1.6s infinite}
+        /* Piyasa genel görünümü — responsive grid */
+        .mo-grid{display:grid;gap:12px;grid-template-columns:1fr 1fr;}
+        .mo-fear{grid-column:1 / -1;}          /* telefon: korku üstte tam genişlik */
+        .mo-full{grid-column:1 / -1;}          /* trend coinler tam genişlik */
+        @media(min-width:720px){
+          .mo-grid{grid-template-columns:1.4fr 1fr 1fr;}  /* geniş: üçü yan yana */
+          .mo-fear{grid-column:auto;}
+        }
         .chip{transition:all .15s ease;cursor:pointer;font-family:inherit}
         .chip:hover{border-color:var(--border3)}
         .row{transition:background .15s ease}
