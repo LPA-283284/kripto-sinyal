@@ -617,7 +617,7 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
       <div style={S.cardHead}>PİYASA GENEL GÖRÜNÜMÜ</div>
       <div style={S.moGrid}>
         {/* Fear & Greed */}
-        <div style={{ ...S.moCell, flex: "1 1 200px" }}>
+        <div style={{ ...S.moCell, flex: "1 1 200px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 150 }}>
           <div style={S.moKey}>Korku / Açgözlülük</div>
           {fg ? (
             <Gauge value={fg.value} label={FG_TR[fg.label] || fg.label} />
@@ -625,24 +625,24 @@ function MarketOverview({ onAddCoin, watch, setTab }) {
         </div>
 
         {/* BTC Dominance */}
-        <div style={S.moCell}>
+        <div style={{ ...S.moCell, flex: "1 1 160px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", minHeight: 150 }}>
           <div style={S.moKey}>BTC Hakimiyeti</div>
           {glob ? (
             <>
-              <div style={{ fontSize: 26, fontWeight: 800, color: "#f0b90b" }}>{glob.btcDom.toFixed(1)}%</div>
-              <div style={{ fontSize: 11, color: "var(--text3)" }}>ETH: {glob.ethDom.toFixed(1)}%</div>
+              <div style={{ fontSize: 40, fontWeight: 800, color: "#f0b90b", letterSpacing: -1, lineHeight: 1.1 }}>{glob.btcDom.toFixed(1)}%</div>
+              <div style={{ fontSize: 13, color: "var(--text3)", marginTop: 4 }}>ETH: {glob.ethDom.toFixed(1)}%</div>
             </>
           ) : <div style={S.moLoad}>…</div>}
         </div>
 
         {/* Toplam piyasa değeri */}
-        <div style={S.moCell}>
+        <div style={{ ...S.moCell, flex: "1 1 160px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", minHeight: 150 }}>
           <div style={S.moKey}>Toplam Piyasa Değeri</div>
           {glob ? (
             <>
-              <div style={{ fontSize: 22, fontWeight: 800 }}>{fmtBig(glob.totalMcap)}</div>
-              <div style={{ fontSize: 11, fontWeight: 700, color: glob.mcapChange >= 0 ? "#00e08a" : "#ff4d6d" }}>
-                {glob.mcapChange >= 0 ? "+" : ""}{glob.mcapChange.toFixed(2)}% (24s)
+              <div style={{ fontSize: 34, fontWeight: 800, letterSpacing: -1, lineHeight: 1.1 }}>{fmtBig(glob.totalMcap)}</div>
+              <div style={{ fontSize: 13, fontWeight: 700, marginTop: 6, color: glob.mcapChange >= 0 ? "#00e08a" : "#ff4d6d" }}>
+                {glob.mcapChange >= 0 ? "▲" : "▼"} {Math.abs(glob.mcapChange).toFixed(2)}% <span style={{ color: "var(--text4)", fontWeight: 500 }}>(24s)</span>
               </div>
             </>
           ) : <div style={S.moLoad}>…</div>}
